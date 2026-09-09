@@ -79,6 +79,29 @@ def get_migration_status() -> tuple[str | None, str | None]:
         return None, None
 
 
+def recover_stale_alembic_version() -> bool:
+    """Repair a stale Alembic version marker when the table already exists."""
+    logger.warning(
+        "Detected stale Alembic version metadata; stamping the current head to recover state."
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "stamp", "head"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            logger.info("✓ Alembic version state recovered successfully")
+            return True
+
+        logger.error("✗ Alembic stamp recovery failed: %s", result.stderr.strip() or result.stdout.strip())
+        return False
+    except Exception as exc:
+        logger.error(f"✗ Failed to recover Alembic version state: {exc}")
+        return False
+
+
 def run_migrations() -> bool:
     """
     Run pending Alembic migrations.
@@ -92,14 +115,40 @@ def run_migrations() -> bool:
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
             check=False,
+            capture_output=True,
+            text=True,
         )
-        
+
         if result.returncode == 0:
             logger.info("✓ Database migrations completed successfully")
             return True
-        else:
-            logger.error(f"✗ Database migrations failed with exit code {result.returncode}")
-            return False
+
+        output = (result.stderr or result.stdout or "").strip()
+        if "alembic_version" in output and "duplicate key value violates unique constraint" in output:
+            logger.warning("Detected duplicate Alembic version table conflict; attempting recovery")
+            if recover_stale_alembic_version():
+                retry = subprocess.run(
+                    [sys.executable, "-m", "alembic", "upgrade", "head"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if retry.returncode == 0:
+                    logger.info("✓ Database migrations completed successfully after recovery")
+                    return True
+                logger.error(f"✗ Database migrations failed after recovery with exit code {retry.returncode}")
+                if retry.stderr:
+                    logger.error(retry.stderr.strip())
+                if retry.stdout:
+                    logger.error(retry.stdout.strip())
+                return False
+
+        logger.error(f"✗ Database migrations failed with exit code {result.returncode}")
+        if result.stderr:
+            logger.error(result.stderr.strip())
+        if result.stdout:
+            logger.error(result.stdout.strip())
+        return False
     except Exception as exc:
         logger.error(f"✗ Failed to run migrations: {exc}")
         return False
