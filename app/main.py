@@ -14,7 +14,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import build_engine, wait_for_database
 from app.core.exceptions import install_exception_handlers
 from app.core.logging import RequestLoggingMiddleware, configure_logging
-from app.core.storage import LocalStorage
+from app.core.storage import build_storage
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -54,9 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    app.state.storage = LocalStorage(
-        Path(settings.storage_dir), settings.max_upload_size_mb * 1024 * 1024
-    )
+    app.state.storage = build_storage(settings)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,

@@ -1,15 +1,21 @@
-"""Local-folder file storage.
+"""Storage backends for uploaded media and documents.
 
-Phase 1 keeps uploaded document files on local disk under STORAGE_DIR so the
-API contract (metadata + file_url) can be validated end to end. A future cloud
-backend only needs to implement the same small interface (save/open/delete)
-and return remote URLs from save().
+The app keeps the existing local-file interface for development and tests, while
+production can switch to Supabase Storage automatically via settings.
 """
 
 import mimetypes
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+
+try:
+    from supabase import create_client
+except ImportError:  # pragma: no cover
+    create_client = None
+
+from app.core.config import Settings
 
 ALLOWED_EXTENSIONS = frozenset(
     {
@@ -85,3 +91,85 @@ class LocalStorage:
             self.resolve(relative_path).unlink(missing_ok=True)
         except ValueError:
             return
+
+
+class SupabaseStorage:
+    """Supabase Storage adapter that mirrors the LocalStorage interface."""
+
+    def __init__(self, url: str, service_role_key: str, bucket: str, max_bytes: int):
+        if create_client is None:
+            raise RuntimeError("Supabase Python package is not installed. Add the 'supabase' dependency.")
+        self.url = url.rstrip("/")
+        self.bucket = bucket
+        self.max_bytes = max_bytes
+        self.client = create_client(self.url, service_role_key)
+        try:
+            self.client.storage.create_bucket(self.bucket, {"public": True})
+        except Exception:
+            pass
+
+    def save(
+        self,
+        namespace: str,
+        data: bytes,
+        original_filename: str,
+        content_type: str | None,
+    ) -> StoredFile:
+        if len(data) > self.max_bytes:
+            raise ValueError(f"File exceeds the {self.max_bytes // (1024 * 1024)} MB upload limit")
+        suffix = Path(original_filename or "").suffix.lower()
+        if suffix not in ALLOWED_EXTENSIONS:
+            raise ValueError(
+                f"Extension '{suffix or '(none)'}' is not allowed; "
+                f"allowed: {sorted(ALLOWED_EXTENSIONS)}"
+            )
+        stored_name = f"{uuid.uuid4().hex}{suffix}"
+        relative = PurePosixPath(namespace, stored_name)
+        object_path = relative.as_posix()
+        content_type_value = content_type or mimetypes.guess_type(original_filename)[0]
+        self.client.storage.from_(self.bucket).upload(
+            object_path,
+            data,
+            {"content-type": content_type_value or "application/octet-stream", "upsert": "true"},
+        )
+        return StoredFile(
+            relative_path=object_path,
+            filename=Path(original_filename).name,
+            mime_type=content_type_value or "application/octet-stream",
+            size_bytes=len(data),
+        )
+
+    def resolve(self, relative_path: str) -> Path:
+        """Download the object into a local temp file so the existing FileResponse flow still works."""
+        pure = PurePosixPath(relative_path)
+        if pure.is_absolute() or ".." in pure.parts:
+            raise ValueError("Invalid stored file path")
+        cache_dir = Path(tempfile.gettempdir()) / "cestos-supabase-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{uuid.uuid4().hex}-{pure.name}"
+        data = self.client.storage.from_(self.bucket).download(pure.as_posix())
+        if hasattr(data, "read"):
+            payload = data.read()
+        else:
+            payload = bytes(data)
+        cache_file.write_bytes(payload)
+        return cache_file
+
+    def delete(self, relative_path: str) -> None:
+        try:
+            self.client.storage.from_(self.bucket).remove([relative_path])
+        except Exception:
+            return
+
+
+def build_storage(settings: Settings):
+    if settings.app_env == "production" and settings.storage_provider == "supabase":
+        if not settings.supabase_url or not settings.supabase_service_role_key:
+            raise ValueError("Supabase storage requires a configured SUPABASE_URL and service role key")
+        return SupabaseStorage(
+            settings.supabase_url,
+            settings.supabase_service_role_key.get_secret_value(),
+            settings.supabase_bucket,
+            settings.max_upload_size_mb * 1024 * 1024,
+        )
+    return LocalStorage(Path(settings.storage_dir), settings.max_upload_size_mb * 1024 * 1024)

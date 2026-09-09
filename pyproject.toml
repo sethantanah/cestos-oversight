@@ -21,6 +21,7 @@ dependencies = [
     "structlog>=25.1,<27",
     "psycopg2>=2.9.12",
     "asyncpg>=0.31.0",
+    "supabase>=2.15.0,<3",
 ]
 
 [dependency-groups]

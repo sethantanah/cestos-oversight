@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost:8000/test-ui"
     storage_dir: str = "storage"
     max_upload_size_mb: int = Field(default=10, ge=1, le=100)
+    storage_provider: Literal["local", "supabase"] = "local"
+    supabase_url: str | None = None
+    supabase_service_role_key: SecretStr | None = None
+    supabase_bucket: str = "cestos-storage"
 
     @field_validator("database_url")
     @classmethod
@@ -52,8 +56,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_settings(self) -> "Settings":
+        if self.app_env == "production" and self.storage_provider == "local" and self.supabase_url:
+            self.storage_provider = "supabase"
         if self.app_env == "production" and (self.debug or "*" in self.cors_origins):
             raise ValueError("Production must disable DEBUG and wildcard CORS")
+        if self.app_env == "production" and self.storage_provider == "supabase":
+            if not self.supabase_url or not self.supabase_service_role_key:
+                raise ValueError(
+                    "Production Supabase storage requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
+                )
         if self.app_env == "production" and self.smtp_host:
             if not (self.smtp_starttls or self.smtp_use_ssl) or not self.public_base_url.startswith(
                 "https://"
