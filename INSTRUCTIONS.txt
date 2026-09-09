@@ -1,0 +1,4152 @@
+You are continuing development of the Cestos Operations Platform for
+
+
+Existing or planned operational domains include:
+
+- Organizations
+- Users / Authentication / RBAC
+- Employees / Workforce
+- Clients
+- Projects
+- Locations
+- Equipment / Assets
+- Asset assignments
+- Asset meter readings
+- Audit logs
+
+DO NOT recreate the application.
+
+DO NOT create a separate inventory database.
+
+Inventory must live in the same PostgreSQL operational database because
+inventory transactions need to connect directly to:
+
+- Projects
+- Locations
+- Warehouses
+- Employees
+- Assets
+- Suppliers
+- Future maintenance work orders
+- Future purchase orders
+- Future drilling operations
+- Future costing
+
+Inspect the existing repository before making changes.
+
+Reuse existing:
+
+- organization model
+- users
+- employees
+- projects
+- locations
+- assets
+- suppliers if already implemented
+- business-number generation
+- audit logging
+- permissions
+- storage abstraction
+- exception handling
+- pagination
+- filtering conventions
+
+Do not duplicate existing concepts.
+
+==================================================
+PHASE OBJECTIVE
+==================================================
+
+Build a complete Inventory, Stores, Consumables and Stock Control
+Management System.
+
+The system must allow Cestos to know:
+
+- What items do we stock?
+- What category does each item belong to?
+- How much stock do we currently have?
+- Where exactly is the stock?
+- What quantity is available?
+- What quantity is reserved?
+- What quantity is damaged/quarantined?
+- What quantity is in transit?
+- What is the value of the inventory?
+- What was received?
+- Who supplied it?
+- Who received it?
+- What was issued?
+- Who requested it?
+- Who received it?
+- Which project consumed it?
+- Which asset consumed it?
+- Why was it issued?
+- What was returned?
+- What was transferred?
+- What was damaged?
+- What was lost?
+- What adjustments were made?
+- Who approved those adjustments?
+- What is below minimum stock?
+- What is out of stock?
+- Which items are moving quickly?
+- Which items are not moving?
+- How quickly are consumables being consumed?
+- When will an item likely run out?
+- What should be reordered?
+- How much should be reordered?
+- Which project is consuming the most material?
+- Which rig is consuming the most parts/consumables?
+- What is the inventory consumption history?
+- What was stock at a particular point in time?
+- Can every stock movement be traced to the responsible person?
+
+The system must preserve a complete stock ledger.
+
+==================================================
+1. FUNDAMENTAL INVENTORY PRINCIPLE
+==================================================
+
+NEVER make:
+
+inventory_items.quantity
+
+the source of truth.
+
+Inventory is EVENT / TRANSACTION based.
+
+Stock must be derived from movements.
+
+Conceptually:
+
+Opening Stock
+    +
+Receipts
+    +
+Returns
+    +
+Transfers In
+    +
+Positive Adjustments
+    -
+Issues
+    -
+Transfers Out
+    -
+Damage / Write-Off
+    -
+Negative Adjustments
+    =
+Stock On Hand
+
+Every inventory movement must create an immutable stock transaction.
+
+Never implement stock changes as:
+
+item.quantity += 10
+item.quantity -= 5
+
+without a corresponding transaction/ledger record.
+
+This principle is mandatory.
+
+==================================================
+2. INVENTORY ARCHITECTURE
+==================================================
+
+The core model should conceptually be:
+
+ITEM MASTER
+     |
+     +---- CATEGORY
+     |
+     +---- UNIT OF MEASURE
+     |
+     +---- SUPPLIER RELATIONSHIPS
+     |
+     +---- STOCK BY LOCATION
+     |
+     +---- TRANSACTIONS
+                |
+                +---- RECEIPT
+                +---- ISSUE
+                +---- RETURN
+                +---- TRANSFER
+                +---- ADJUSTMENT
+                +---- DAMAGE
+                +---- WRITE-OFF
+                +---- CONSUMPTION
+                |
+                +---- PROJECT
+                +---- ASSET
+                +---- EMPLOYEE
+                +---- SUPPLIER
+                +---- FUTURE WORK ORDER
+
+Inventory must be traceable from purchase/receipt to final consumption.
+
+==================================================
+3. INVENTORY CATEGORIES
+==================================================
+
+Implement:
+
+inventory_categories
+
+Fields:
+
+id UUID PK
+organization_id UUID NOT NULL
+
+name VARCHAR(150) NOT NULL
+code VARCHAR(50) NULL
+
+description TEXT NULL
+
+parent_category_id UUID NULL
+    FK -> inventory_categories.id
+
+is_consumable BOOLEAN DEFAULT TRUE
+
+is_spare_part BOOLEAN DEFAULT FALSE
+
+is_lubricant BOOLEAN DEFAULT FALSE
+
+is_ppe BOOLEAN DEFAULT FALSE
+
+is_tool BOOLEAN DEFAULT FALSE
+
+is_fuel_related BOOLEAN DEFAULT FALSE
+
+is_active BOOLEAN DEFAULT TRUE
+
+created_at
+updated_at
+created_by_id
+updated_by_id
+
+Support category hierarchy.
+
+Examples:
+
+DRILLING CONSUMABLES
+    Drill Rods
+    Core Barrels
+    Drill Bits
+    Reaming Shells
+    Casing
+    Core Trays
+
+MECHANICAL SPARES
+    Engine Parts
+    Bearings
+    Belts
+    Filters
+    Seals
+    Hoses
+
+HYDRAULICS
+    Hydraulic Hoses
+    Hydraulic Fittings
+    Hydraulic Pumps
+    Hydraulic Filters
+    Hydraulic Oil
+
+LUBRICANTS
+    Engine Oil
+    Gear Oil
+    Hydraulic Oil
+    Grease
+    Coolant
+
+ELECTRICAL
+    Batteries
+    Cables
+    Fuses
+    Sensors
+    Lights
+
+PPE
+    Helmets
+    Safety Boots
+    Gloves
+    Safety Glasses
+    Reflective Vests
+    Respirators
+
+TOOLS
+    Hand Tools
+    Power Tools
+    Measuring Tools
+
+OFFICE / CAMP SUPPLIES
+
+OTHER
+
+==================================================
+4. UNITS OF MEASURE
+==================================================
+
+Implement:
+
+units_of_measure
+
+Fields:
+
+id UUID PK
+organization_id UUID NULL
+
+name
+symbol
+category
+precision
+
+is_active
+
+created_at
+updated_at
+
+Examples:
+
+Piece        pcs
+Box          box
+Set          set
+Pair         pair
+Bag          bag
+Kilogram     kg
+Gram         g
+Litre        L
+Millilitre   ml
+Metre        m
+Roll         roll
+Drum         drum
+Carton       carton
+
+Do not store units only as arbitrary strings throughout the database.
+
+==================================================
+5. UNIT CONVERSIONS
+==================================================
+
+Prepare for situations such as:
+
+1 carton = 24 pieces
+1 drum = 200 litres
+
+Implement:
+
+unit_conversions
+
+Fields:
+
+id
+organization_id
+
+item_id nullable
+
+from_unit_id
+to_unit_id
+
+conversion_factor NUMERIC
+
+is_active
+
+created_at
+updated_at
+
+If conversion is item-specific, use item_id.
+
+Example:
+
+Oil:
+1 DRUM = 208 L
+
+Filters:
+1 BOX = 12 PCS
+
+All stock ledger quantities should ultimately be normalized to the
+inventory item's base unit.
+
+==================================================
+6. INVENTORY ITEM MASTER
+==================================================
+
+Implement:
+
+inventory_items
+
+Fields:
+
+id UUID PRIMARY KEY
+
+organization_id UUID NOT NULL
+
+item_number VARCHAR(30) NOT NULL
+
+sku VARCHAR(100) NULL
+
+name VARCHAR(200) NOT NULL
+
+description TEXT NULL
+
+category_id UUID NOT NULL
+
+base_unit_id UUID NOT NULL
+
+manufacturer VARCHAR(150) NULL
+
+manufacturer_part_number VARCHAR(150) NULL
+
+internal_part_number VARCHAR(150) NULL
+
+barcode VARCHAR(255) NULL
+qr_code_value VARCHAR(255) NULL
+
+preferred_supplier_id UUID NULL
+
+standard_unit_cost NUMERIC(18,4) NULL
+
+default_currency VARCHAR(10) NULL
+
+minimum_stock_level NUMERIC(18,4) DEFAULT 0
+
+maximum_stock_level NUMERIC(18,4) NULL
+
+reorder_point NUMERIC(18,4) NULL
+
+reorder_quantity NUMERIC(18,4) NULL
+
+safety_stock NUMERIC(18,4) NULL
+
+lead_time_days INTEGER NULL
+
+criticality VARCHAR(30)
+
+tracking_method VARCHAR(30)
+
+shelf_life_days INTEGER NULL
+
+requires_expiry_tracking BOOLEAN DEFAULT FALSE
+
+requires_batch_tracking BOOLEAN DEFAULT FALSE
+
+requires_serial_tracking BOOLEAN DEFAULT FALSE
+
+requires_approval_to_issue BOOLEAN DEFAULT FALSE
+
+is_consumable BOOLEAN DEFAULT TRUE
+
+is_returnable BOOLEAN DEFAULT FALSE
+
+is_active BOOLEAN DEFAULT TRUE
+
+archived_at TIMESTAMPTZ NULL
+
+image_url TEXT NULL
+
+notes TEXT NULL
+
+created_at
+updated_at
+created_by_id
+updated_by_id
+
+Constraints:
+
+UNIQUE (organization_id, item_number)
+
+SKU uniqueness where appropriate.
+
+All quantities >= 0 where applicable.
+
+==================================================
+7. ITEM NUMBERING
+==================================================
+
+Use the existing business counter system.
+
+Example:
+
+ITM-000001
+ITM-000002
+
+Do not use MAX()+1.
+
+Later category prefixes may be configurable.
+
+==================================================
+8. ITEM CRITICALITY
+==================================================
+
+Criticality:
+
+LOW
+MEDIUM
+HIGH
+CRITICAL
+
+A CRITICAL item may stop drilling operations if unavailable.
+
+Examples:
+
+critical hydraulic component
+specific drill bit
+essential filter
+critical engine component
+
+Criticality must influence:
+
+- dashboard alerts
+- reorder recommendations
+- stockout severity
+
+==================================================
+9. TRACKING METHODS
+==================================================
+
+TrackingMethod:
+
+QUANTITY
+BATCH
+SERIALIZED
+
+Examples:
+
+Engine Oil:
+QUANTITY
+
+Drill Bits:
+possibly QUANTITY or SERIALIZED depending on company policy
+
+Expiring chemical:
+BATCH
+
+Expensive replacement component:
+SERIALIZED
+
+The architecture must support all three.
+
+==================================================
+10. INVENTORY LOCATIONS / STORES
+==================================================
+
+Reuse the existing generic locations model where appropriate.
+
+However, inventory needs additional store-specific information.
+
+Implement:
+
+inventory_stores
+
+Fields:
+
+id UUID PK
+organization_id UUID NOT NULL
+
+store_number VARCHAR(30)
+
+name
+
+location_id UUID NOT NULL
+
+store_type
+
+manager_employee_id UUID NULL
+
+description nullable
+
+is_active
+
+created_at
+updated_at
+
+StoreType:
+
+MAIN_WAREHOUSE
+PROJECT_STORE
+WORKSHOP_STORE
+CONTAINER_STORE
+MOBILE_STORE
+OTHER
+
+Examples:
+
+Cestos Main Warehouse
+Main Workshop Store
+Project Alpha Store
+Project Bravo Store
+
+==================================================
+11. STORAGE BINS / SUBLOCATIONS
+==================================================
+
+Implement:
+
+inventory_bins
+
+Fields:
+
+id
+organization_id
+
+store_id
+
+code
+name nullable
+
+zone nullable
+aisle nullable
+rack nullable
+shelf nullable
+bin nullable
+
+description nullable
+
+is_active
+
+created_at
+updated_at
+
+Example:
+
+Main Warehouse
+    Zone A
+        Rack 03
+            Shelf B
+                Bin 04
+
+This lets Cestos know exactly where an item is stored.
+
+==================================================
+12. STOCK LOTS / BATCHES
+==================================================
+
+Implement:
+
+inventory_lots
+
+Fields:
+
+id
+organization_id
+
+item_id
+
+lot_number
+
+supplier_batch_number nullable
+
+manufacture_date nullable
+expiry_date nullable
+
+received_date nullable
+
+unit_cost nullable
+currency nullable
+
+supplier_id nullable
+
+status
+
+notes nullable
+
+created_at
+updated_at
+
+LotStatus:
+
+ACTIVE
+QUARANTINED
+EXPIRED
+DEPLETED
+RECALLED
+CLOSED
+
+Use lots when item.requires_batch_tracking = true.
+
+==================================================
+13. SERIALIZED INVENTORY
+==================================================
+
+Implement:
+
+inventory_serials
+
+Fields:
+
+id
+organization_id
+
+item_id
+
+serial_number
+
+lot_id nullable
+
+current_store_id nullable
+current_bin_id nullable
+
+status
+
+received_at nullable
+
+unit_cost nullable
+
+supplier_id nullable
+
+assigned_asset_id nullable
+
+notes nullable
+
+created_at
+updated_at
+
+SerialStatus:
+
+IN_STOCK
+RESERVED
+ISSUED
+INSTALLED
+RETURNED
+DAMAGED
+QUARANTINED
+SCRAPPED
+
+This becomes particularly important for expensive components.
+
+==================================================
+14. INVENTORY TRANSACTIONS
+==================================================
+
+This is the heart of the system.
+
+Implement:
+
+inventory_transactions
+
+Fields:
+
+id UUID PRIMARY KEY
+
+organization_id UUID NOT NULL
+
+transaction_number VARCHAR(30) NOT NULL
+
+transaction_type VARCHAR(40) NOT NULL
+
+item_id UUID NOT NULL
+
+quantity NUMERIC(18,4) NOT NULL
+
+unit_id UUID NOT NULL
+
+normalized_quantity NUMERIC(18,4) NOT NULL
+
+from_store_id UUID NULL
+from_bin_id UUID NULL
+
+to_store_id UUID NULL
+to_bin_id UUID NULL
+
+lot_id UUID NULL
+serial_id UUID NULL
+
+project_id UUID NULL
+
+asset_id UUID NULL
+
+employee_id UUID NULL
+
+supplier_id UUID NULL
+
+requested_by_id UUID NULL
+issued_by_id UUID NULL
+received_by_id UUID NULL
+approved_by_id UUID NULL
+
+future_work_order_id UUID NULL
+
+reference_type VARCHAR(50) NULL
+reference_id UUID NULL
+reference_number VARCHAR(100) NULL
+
+unit_cost NUMERIC(18,4) NULL
+total_cost NUMERIC(18,2) NULL
+currency VARCHAR(10) NULL
+
+transaction_date TIMESTAMPTZ NOT NULL
+
+reason TEXT NULL
+notes TEXT NULL
+
+status VARCHAR(30) NOT NULL
+
+created_at
+created_by_id
+
+IMPORTANT:
+
+Once a transaction is POSTED it should not normally be edited.
+
+Corrections should use reversal/adjustment transactions.
+
+==================================================
+15. TRANSACTION TYPES
+==================================================
+
+TransactionType:
+
+OPENING_BALANCE
+
+PURCHASE_RECEIPT
+OTHER_RECEIPT
+
+ISSUE
+CONSUMPTION
+
+RETURN_FROM_EMPLOYEE
+RETURN_FROM_PROJECT
+RETURN_FROM_ASSET
+
+TRANSFER_OUT
+TRANSFER_IN
+
+POSITIVE_ADJUSTMENT
+NEGATIVE_ADJUSTMENT
+
+DAMAGE
+LOSS
+WRITE_OFF
+
+QUARANTINE
+RELEASE_FROM_QUARANTINE
+
+STOCK_COUNT_ADJUSTMENT
+
+FUTURE:
+MAINTENANCE_ISSUE
+PURCHASE_RETURN
+
+==================================================
+16. TRANSACTION STATUS
+==================================================
+
+TransactionStatus:
+
+DRAFT
+PENDING_APPROVAL
+APPROVED
+POSTED
+REVERSED
+CANCELLED
+
+Only POSTED transactions affect stock.
+
+A cancelled or draft transaction must not affect balances.
+
+==================================================
+17. DOUBLE-SIDED TRANSFER DESIGN
+==================================================
+
+Transfers must be atomic.
+
+Example:
+
+Main Warehouse
+    ->
+Project Alpha Store
+
+The system must not independently create an outbound movement and
+possibly fail before creating the inbound movement.
+
+Implement a transfer document/header:
+
+inventory_transfers
+
+Fields:
+
+id
+organization_id
+
+transfer_number
+
+from_store_id
+to_store_id
+
+requested_by_id
+approved_by_id nullable
+
+dispatched_by_id nullable
+received_by_id nullable
+
+requested_at
+approved_at nullable
+dispatched_at nullable
+received_at nullable
+
+status
+
+project_id nullable
+
+reason nullable
+notes nullable
+
+created_at
+updated_at
+
+TransferStatus:
+
+DRAFT
+PENDING_APPROVAL
+APPROVED
+DISPATCHED
+IN_TRANSIT
+RECEIVED
+CANCELLED
+
+Then:
+
+inventory_transfer_items
+
+id
+transfer_id
+item_id
+quantity
+unit_id
+lot_id nullable
+serial_id nullable
+from_bin_id nullable
+to_bin_id nullable
+
+When dispatching:
+
+create transfer-out ledger entries.
+
+When receiving:
+
+create transfer-in ledger entries.
+
+Support IN_TRANSIT stock.
+
+==================================================
+18. STOCK BALANCE
+==================================================
+
+Provide a performant balance model.
+
+Implement either:
+
+inventory_balances
+
+or a carefully designed materialized/current balance layer.
+
+Suggested:
+
+inventory_balances
+
+organization_id
+item_id
+store_id
+bin_id nullable
+lot_id nullable
+
+quantity_on_hand
+quantity_reserved
+quantity_available
+quantity_quarantined
+
+average_unit_cost nullable
+
+updated_at
+
+Unique:
+
+organization_id
+item_id
+store_id
+bin_id
+lot_id
+
+IMPORTANT:
+
+inventory_balances is a projection/cache.
+
+inventory_transactions remains the source of truth.
+
+Balance updates must happen transactionally with ledger posting.
+
+Never allow direct arbitrary modification of inventory_balances.
+
+==================================================
+19. STOCK BALANCE FORMULA
+==================================================
+
+Expose:
+
+ON HAND
+
+RESERVED
+
+AVAILABLE
+
+QUARANTINED
+
+IN TRANSIT
+
+Conceptually:
+
+available =
+on_hand
+- reserved
+- quarantined
+
+Do not count in-transit stock as available at destination until received.
+
+==================================================
+20. STOCK RECEIPTS
+==================================================
+
+Implement receipt documents.
+
+inventory_receipts
+
+Fields:
+
+id
+organization_id
+
+receipt_number
+
+receipt_type
+
+supplier_id nullable
+
+purchase_order_id nullable
+
+store_id
+
+received_by_id
+
+received_at
+
+supplier_delivery_note nullable
+
+invoice_number nullable
+
+status
+
+notes nullable
+
+created_at
+updated_at
+
+inventory_receipt_items
+
+id
+receipt_id
+
+item_id
+
+quantity
+unit_id
+
+normalized_quantity
+
+unit_cost
+currency
+
+lot_number nullable
+expiry_date nullable
+
+serial_number nullable
+
+bin_id nullable
+
+notes nullable
+
+Posting a receipt must:
+
+1. Validate receipt.
+2. Create lots/serials where needed.
+3. Create inventory transaction(s).
+4. Update balance projection.
+5. Update valuation.
+6. Audit event.
+7. Execute atomically.
+
+==================================================
+21. GOODS RECEIPT FLOW
+==================================================
+
+Support:
+
+Supplier
+    ↓
+Delivery
+    ↓
+Receive into Store
+    ↓
+Inspect / Verify Quantity
+    ↓
+Create Receipt
+    ↓
+POST
+    ↓
+Stock Available
+
+Future procurement integration:
+
+Purchase Order
+    ↓
+Goods Receipt
+    ↓
+Inventory Receipt
+    ↓
+Stock
+
+Do not duplicate purchase orders if procurement module already exists.
+
+==================================================
+22. INVENTORY ISSUES
+==================================================
+
+Implement:
+
+inventory_issues
+
+Fields:
+
+id
+organization_id
+
+issue_number
+
+store_id
+
+project_id nullable
+asset_id nullable
+
+requested_by_id nullable
+
+issued_to_employee_id nullable
+
+issued_by_id
+
+approved_by_id nullable
+
+requested_at nullable
+issued_at nullable
+
+purpose
+
+status
+
+notes nullable
+
+created_at
+updated_at
+
+inventory_issue_items
+
+id
+issue_id
+
+item_id
+
+quantity
+unit_id
+
+normalized_quantity
+
+lot_id nullable
+serial_id nullable
+
+bin_id nullable
+
+unit_cost nullable
+total_cost nullable
+
+notes nullable
+
+==================================================
+23. ISSUE PURPOSE
+==================================================
+
+IssuePurpose:
+
+PROJECT_CONSUMPTION
+ASSET_CONSUMPTION
+MAINTENANCE
+EMPLOYEE_USE
+PPE
+TOOLS
+OFFICE_USE
+CAMP_USE
+OTHER
+
+Examples:
+
+Engine oil issued:
+    Project Alpha
+    Rig CDR-001
+
+Filter issued:
+    Rig CDR-001
+    Future WO-000143
+
+PPE:
+    Employee EMP-00123
+
+Drill consumables:
+    Project Alpha
+
+==================================================
+24. ISSUE VALIDATION
+==================================================
+
+Before posting an issue:
+
+- item must exist
+- store must exist
+- item/store organization must match
+- quantity > 0
+- sufficient AVAILABLE stock
+- selected lot must contain enough stock
+- serialized item must have correct serial
+- expired stock should normally be blocked
+- quarantined stock must be blocked
+- project must be active where relevant
+- asset must be valid where relevant
+- employee must be valid
+- approval must exist if required
+- transaction must not make available stock negative
+
+Do not allow negative stock by default.
+
+Create an explicit privileged override only if Cestos later requests it.
+
+==================================================
+25. RETURNS
+==================================================
+
+Implement:
+
+inventory_returns
+
+Fields:
+
+id
+organization_id
+
+return_number
+
+return_type
+
+original_issue_id nullable
+
+store_id
+
+project_id nullable
+asset_id nullable
+
+returned_by_employee_id nullable
+received_by_id
+
+returned_at
+
+condition
+
+status
+
+notes nullable
+
+created_at
+updated_at
+
+ReturnCondition:
+
+GOOD
+USED_SERVICEABLE
+DAMAGED
+DEFECTIVE
+QUARANTINE
+SCRAP
+
+Returned GOOD stock may return to available inventory.
+
+Damaged stock must not automatically become available.
+
+==================================================
+26. STOCK RESERVATIONS
+==================================================
+
+Implement:
+
+inventory_reservations
+
+Fields:
+
+id
+organization_id
+
+reservation_number
+
+item_id
+store_id
+
+project_id nullable
+asset_id nullable
+
+quantity
+
+reserved_for_date nullable
+expires_at nullable
+
+requested_by_id
+approved_by_id nullable
+
+status
+
+notes nullable
+
+created_at
+updated_at
+
+ReservationStatus:
+
+PENDING
+ACTIVE
+FULFILLED
+RELEASED
+EXPIRED
+CANCELLED
+
+Reservations reduce AVAILABLE stock but not ON-HAND stock.
+
+==================================================
+27. STOCK ADJUSTMENTS
+==================================================
+
+Implement:
+
+inventory_adjustments
+
+Fields:
+
+id
+organization_id
+
+adjustment_number
+
+store_id
+
+reason_code
+
+requested_by_id
+approved_by_id nullable
+
+status
+
+notes
+
+created_at
+updated_at
+
+inventory_adjustment_items
+
+id
+adjustment_id
+
+item_id
+
+system_quantity
+actual_quantity
+
+difference_quantity
+
+unit_cost nullable
+
+bin_id nullable
+lot_id nullable
+
+reason nullable
+
+All adjustments require:
+
+reason
+audit event
+
+Significant adjustments should require approval.
+
+Never silently edit balances.
+
+==================================================
+28. STOCK COUNTS
+==================================================
+
+Implement physical inventory counting.
+
+inventory_stock_counts
+
+Fields:
+
+id
+organization_id
+
+count_number
+
+store_id
+
+count_type
+
+scheduled_date nullable
+started_at nullable
+completed_at nullable
+
+created_by_id
+
+approved_by_id nullable
+
+status
+
+notes nullable
+
+created_at
+updated_at
+
+CountType:
+
+FULL
+CYCLE
+SPOT
+
+Status:
+
+DRAFT
+IN_PROGRESS
+SUBMITTED
+APPROVED
+POSTED
+CANCELLED
+
+Then:
+
+inventory_stock_count_items
+
+id
+stock_count_id
+
+item_id
+bin_id nullable
+lot_id nullable
+
+system_quantity
+
+counted_quantity
+
+variance_quantity
+
+counted_by_id
+
+counted_at
+
+notes nullable
+
+Posting approved variances creates STOCK_COUNT_ADJUSTMENT transactions.
+
+Never modify balances directly.
+
+==================================================
+29. INVENTORY VALUATION
+==================================================
+
+Implement inventory valuation foundation.
+
+Use weighted average cost initially unless existing accounting requirements specify another method.
+
+Support:
+
+quantity_on_hand
+average_unit_cost
+inventory_value
+
+Formula:
+
+Inventory Value =
+Quantity On Hand × Average Unit Cost
+
+Receipts should update weighted average cost.
+
+Issues should use the appropriate current inventory cost.
+
+Do not use Python float for money.
+
+Use Decimal / PostgreSQL NUMERIC.
+
+Preserve transaction unit cost so historical costing remains reproducible.
+
+==================================================
+30. ITEM SUPPLIERS
+==================================================
+
+Implement:
+
+inventory_item_suppliers
+
+Fields:
+
+id
+organization_id
+
+item_id
+supplier_id
+
+supplier_item_code nullable
+
+supplier_description nullable
+
+last_unit_cost nullable
+currency nullable
+
+lead_time_days nullable
+
+minimum_order_quantity nullable
+
+is_preferred BOOLEAN DEFAULT FALSE
+
+is_active
+
+last_purchase_date nullable
+
+created_at
+updated_at
+
+This will later support procurement recommendations.
+
+==================================================
+31. STOCK LEVEL SETTINGS BY LOCATION
+==================================================
+
+Global item reorder settings are not enough.
+
+Implement:
+
+inventory_stock_policies
+
+Fields:
+
+id
+organization_id
+
+item_id
+store_id
+
+minimum_stock_level
+maximum_stock_level nullable
+
+reorder_point
+reorder_quantity nullable
+
+safety_stock nullable
+
+lead_time_days nullable
+
+is_critical BOOLEAN DEFAULT FALSE
+
+created_at
+updated_at
+
+Example:
+
+Engine Oil:
+
+Main Warehouse:
+minimum = 20 drums
+
+Project Alpha Store:
+minimum = 5 drums
+
+Project Bravo Store:
+minimum = 3 drums
+
+==================================================
+32. REORDER STATUS
+==================================================
+
+Create computed status:
+
+HEALTHY
+LOW_STOCK
+REORDER_REQUIRED
+CRITICAL
+OUT_OF_STOCK
+OVERSTOCK
+
+Base it on:
+
+available quantity
+minimum
+reorder point
+safety stock
+criticality
+
+Do not store the computed state unnecessarily.
+
+==================================================
+33. CONSUMPTION HISTORY
+==================================================
+
+Because every issue is linked to operational entities, support analysis by:
+
+item
+category
+store
+project
+asset
+employee
+department
+date range
+
+Examples:
+
+How much engine oil did CDR-001 consume?
+
+How many drill bits did Project Alpha consume?
+
+How much PPE was issued this month?
+
+How many filters did the maintenance team consume?
+
+==================================================
+34. CONSUMPTION RATE
+==================================================
+
+Implement foundational analytics:
+
+Average Daily Consumption =
+Total Consumption / Number of Days
+
+Average Weekly Consumption
+
+Average Monthly Consumption
+
+Use configurable lookback periods:
+
+7 days
+30 days
+60 days
+90 days
+
+Do not count transfers as consumption.
+
+Do not count receipts as consumption.
+
+Consumption should primarily come from ISSUE / CONSUMPTION events.
+
+==================================================
+35. EXPECTED STOCK DEPLETION
+==================================================
+
+Implement basic deterministic forecasting.
+
+Formula:
+
+Average Daily Usage =
+Consumption during lookback / number of relevant days
+
+Expected Days Remaining =
+Available Stock / Average Daily Usage
+
+Estimated Stockout Date =
+Current Date + Expected Days Remaining
+
+If consumption = 0:
+
+do not divide by zero.
+
+Return:
+
+days_remaining = null
+forecast_status = NO_RECENT_CONSUMPTION
+
+Provide:
+
+7-day
+30-day
+90-day consumption rates where useful.
+
+==================================================
+36. REORDER RECOMMENDATION
+==================================================
+
+Create a basic recommendation service.
+
+Consider:
+
+current available stock
+average consumption
+safety stock
+supplier lead time
+reorder point
+open reservations
+
+Future version will include:
+
+planned projects
+number of active rigs
+planned maintenance
+seasonality
+purchase orders
+supplier reliability
+
+For now provide deterministic recommendation.
+
+Example:
+
+Engine Oil
+
+Available:
+12 drums
+
+Average Usage:
+0.8 drums/day
+
+Days Remaining:
+15
+
+Supplier Lead Time:
+21 days
+
+Status:
+REORDER NOW
+
+Recommended Quantity:
+20 drums
+
+Do not use AI for this calculation.
+
+==================================================
+37. DEAD / SLOW MOVING STOCK
+==================================================
+
+Compute inventory movement classifications.
+
+Example configurable defaults:
+
+FAST_MOVING
+NORMAL
+SLOW_MOVING
+DEAD_STOCK
+
+Potential logic:
+
+No consumption in 180 days:
+DEAD_STOCK
+
+Low consumption over 90 days:
+SLOW_MOVING
+
+Do not hardcode thresholds across controllers.
+
+Create centralized configuration/service.
+
+==================================================
+38. STOCK AGING
+==================================================
+
+Support stock aging using receipt/lot information.
+
+Buckets:
+
+0-30 days
+31-60 days
+61-90 days
+91-180 days
+181-365 days
+365+ days
+
+This will help management identify capital tied up in inventory.
+
+==================================================
+39. EXPIRING INVENTORY
+==================================================
+
+For items requiring expiry tracking:
+
+Provide:
+
+expired
+expiring within 7 days
+30 days
+60 days
+90 days
+
+Expired stock must not normally be issuable.
+
+Use FEFO:
+
+First Expiry, First Out
+
+for expiry-controlled inventory.
+
+==================================================
+40. FIFO / FEFO ISSUE SUGGESTIONS
+==================================================
+
+For normal stock:
+
+suggest FIFO.
+
+For expiry-controlled stock:
+
+suggest FEFO.
+
+The backend should suggest the appropriate lot.
+
+Do not silently choose stock if business rules require storekeeper confirmation.
+
+==================================================
+41. ASSET COMPATIBILITY
+==================================================
+
+Prepare for spare parts compatibility.
+
+Implement:
+
+inventory_item_asset_compatibility
+
+Fields:
+
+id
+organization_id
+
+item_id
+
+asset_category_id nullable
+asset_id nullable
+
+manufacturer nullable
+model nullable
+
+notes nullable
+
+is_verified
+
+created_at
+updated_at
+
+Example:
+
+Oil Filter XYZ
+compatible with:
+CDR-001
+CDR-002
+
+or:
+
+compatible with:
+Diamond Drill Rig Model X200
+
+This will become important for maintenance.
+
+==================================================
+42. INVENTORY REQUESTS
+==================================================
+
+Before items are issued, support internal requests.
+
+Implement:
+
+inventory_requests
+
+Fields:
+
+id
+organization_id
+
+request_number
+
+requested_by_id
+
+project_id nullable
+asset_id nullable
+location_id nullable
+
+needed_by_date nullable
+
+priority
+
+purpose
+
+status
+
+approved_by_id nullable
+approved_at nullable
+
+notes nullable
+
+created_at
+updated_at
+
+inventory_request_items
+
+id
+request_id
+
+item_id
+
+quantity
+unit_id
+
+reason nullable
+
+quantity_approved nullable
+quantity_issued nullable
+
+Priority:
+
+LOW
+NORMAL
+HIGH
+URGENT
+CRITICAL
+
+Status:
+
+DRAFT
+SUBMITTED
+PENDING_APPROVAL
+APPROVED
+PARTIALLY_APPROVED
+REJECTED
+PARTIALLY_ISSUED
+FULFILLED
+CANCELLED
+
+==================================================
+43. REQUEST -> ISSUE FLOW
+==================================================
+
+Support:
+
+Employee / Project
+       ↓
+Inventory Request
+       ↓
+Approval
+       ↓
+Storekeeper
+       ↓
+Inventory Issue
+       ↓
+Stock Ledger
+       ↓
+Project / Asset / Employee Consumption
+
+Allow direct issues for authorized situations, but preserve approval requirements where configured.
+
+==================================================
+44. APPROVALS
+==================================================
+
+Reuse existing generic approval infrastructure if available.
+
+Do not create another incompatible approval engine.
+
+Inventory approvals may include:
+
+stock request approval
+large issue approval
+stock adjustment approval
+write-off approval
+transfer approval
+
+Rules should eventually be configurable.
+
+==================================================
+45. STOCK WRITE-OFF
+==================================================
+
+Support controlled write-off.
+
+Reasons:
+
+DAMAGED
+EXPIRED
+LOST
+OBSOLETE
+UNUSABLE
+CONTAMINATED
+OTHER
+
+Require:
+
+quantity
+reason
+responsible/requesting person
+approver
+date
+supporting notes
+
+Write-off creates a ledger transaction.
+
+Never simply reduce inventory balance.
+
+==================================================
+46. QUARANTINE
+==================================================
+
+Support moving stock into quarantine.
+
+Examples:
+
+damaged goods
+suspected defective parts
+expired material
+incorrect delivery
+items awaiting inspection
+
+Quarantined stock:
+
+remains physically on hand
+but is NOT available for issue.
+
+Support:
+
+quarantine
+release
+write-off
+return-to-supplier later
+
+==================================================
+47. INVENTORY DASHBOARD
+==================================================
+
+Implement:
+
+GET /api/v1/inventory/dashboard-summary
+
+Return at least:
+
+total_inventory_items
+
+total_inventory_value
+
+total_stock_on_hand
+
+items_in_stock
+
+low_stock_items
+
+out_of_stock_items
+
+critical_stock_items
+
+overstock_items
+
+items_requiring_reorder
+
+quarantined_items
+
+expired_inventory
+
+expiring_inventory
+
+slow_moving_items
+
+dead_stock_items
+
+pending_requests
+
+pending_approvals
+
+pending_transfers
+
+in_transit_transfers
+
+recent_receipts
+
+recent_issues
+
+recent_adjustments
+
+inventory_value_by_category
+
+inventory_value_by_store
+
+consumption_by_category
+
+consumption_by_project
+
+top_consumed_items
+
+==================================================
+48. STORE DASHBOARD
+==================================================
+
+Implement:
+
+GET /api/v1/inventory/stores/{store_id}/dashboard
+
+Show:
+
+inventory value
+number of items
+low stock
+out of stock
+critical items
+pending requests
+pending transfers
+receipts today
+issues today
+quarantine stock
+stock count status
+expiring items
+
+==================================================
+49. ITEM 360 VIEW
+==================================================
+
+Implement:
+
+GET /api/v1/inventory/items/{id}/overview
+
+Return:
+
+item
+
+category
+base_unit
+
+current_total_stock
+
+stock_by_store
+
+stock_by_bin
+
+available_quantity
+
+reserved_quantity
+
+quarantined_quantity
+
+in_transit_quantity
+
+average_unit_cost
+
+total_inventory_value
+
+reorder_status
+
+consumption_7d
+consumption_30d
+consumption_90d
+
+average_daily_consumption
+
+estimated_days_remaining
+
+estimated_stockout_date
+
+preferred_supplier
+
+supplier_options
+
+stock_policies
+
+lots
+expiring_lots
+
+compatible_assets
+
+recent_receipts
+recent_issues
+recent_transfers
+
+transaction_history summary
+
+==================================================
+50. INVENTORY ITEM PROFILE UI
+==================================================
+
+The API should support a frontend page such as:
+
+ITM-000123
+ENGINE OIL 15W-40
+
+Category:
+Lubricants
+
+Base Unit:
+Litre
+
+Criticality:
+HIGH
+
+Total On Hand:
+2,480 L
+
+Reserved:
+300 L
+
+Available:
+2,180 L
+
+In Transit:
+500 L
+
+Average Daily Consumption:
+84 L
+
+Estimated Days Remaining:
+26
+
+Supplier Lead Time:
+21 days
+
+REORDER STATUS:
+WARNING
+
+----------------------------------
+
+Stock by Location:
+
+Main Warehouse        1,400 L
+Project Alpha           580 L
+Project Bravo           500 L
+
+----------------------------------
+
+Tabs:
+
+Overview
+Stock
+Transactions
+Receipts
+Issues
+Transfers
+Lots
+Suppliers
+Projects
+Assets
+Consumption
+Forecast
+Stock Counts
+Adjustments
+Activity
+
+==================================================
+51. INVENTORY TRANSACTION LEDGER
+==================================================
+
+Implement:
+
+GET /api/v1/inventory/transactions
+
+Filters:
+
+item_id
+category_id
+transaction_type
+store_id
+project_id
+asset_id
+employee_id
+supplier_id
+date_from
+date_to
+transaction_number
+reference_number
+status
+
+Return:
+
+date
+transaction number
+type
+item
+quantity
+from
+to
+project
+asset
+employee
+unit cost
+total cost
+reference
+recorded by
+
+This is one of the most important audit screens.
+
+==================================================
+52. STOCK HISTORY
+==================================================
+
+The architecture must make it possible to answer:
+
+"What was the stock of Engine Oil at Project Alpha on 31 August 2026?"
+
+Implement a service that can reconstruct historical balance from POSTED ledger transactions up to a timestamp.
+
+Do not rely solely on current inventory_balances.
+
+==================================================
+53. INVENTORY ACTIVITY TIMELINE
+==================================================
+
+Provide:
+
+GET /api/v1/inventory/items/{id}/activity
+
+Aggregate:
+
+item created
+receipt
+issue
+return
+transfer
+adjustment
+stock count
+reservation
+quarantine
+release
+write-off
+policy changed
+
+Newest first.
+
+==================================================
+54. INVENTORY API - ITEMS
+==================================================
+
+Implement:
+
+GET    /api/v1/inventory/items
+
+POST   /api/v1/inventory/items
+
+GET    /api/v1/inventory/items/{id}
+
+PATCH  /api/v1/inventory/items/{id}
+
+POST   /api/v1/inventory/items/{id}/archive
+
+POST   /api/v1/inventory/items/{id}/restore
+
+GET    /api/v1/inventory/items/{id}/overview
+
+GET    /api/v1/inventory/items/{id}/stock
+
+GET    /api/v1/inventory/items/{id}/activity
+
+==================================================
+55. CATEGORY API
+==================================================
+
+GET    /api/v1/inventory/categories
+POST   /api/v1/inventory/categories
+GET    /api/v1/inventory/categories/{id}
+PATCH  /api/v1/inventory/categories/{id}
+POST   /api/v1/inventory/categories/{id}/archive
+
+==================================================
+56. STORE API
+==================================================
+
+GET    /api/v1/inventory/stores
+POST   /api/v1/inventory/stores
+GET    /api/v1/inventory/stores/{id}
+PATCH  /api/v1/inventory/stores/{id}
+
+GET    /api/v1/inventory/stores/{id}/stock
+GET    /api/v1/inventory/stores/{id}/dashboard
+
+==================================================
+57. BIN API
+==================================================
+
+GET    /api/v1/inventory/stores/{id}/bins
+POST   /api/v1/inventory/stores/{id}/bins
+PATCH  /api/v1/inventory/bins/{id}
+
+==================================================
+58. RECEIPT API
+==================================================
+
+GET    /api/v1/inventory/receipts
+POST   /api/v1/inventory/receipts
+GET    /api/v1/inventory/receipts/{id}
+PATCH  /api/v1/inventory/receipts/{id}
+
+POST   /api/v1/inventory/receipts/{id}/post
+POST   /api/v1/inventory/receipts/{id}/cancel
+
+Posted receipts should not be freely editable.
+
+==================================================
+59. ISSUE API
+==================================================
+
+GET    /api/v1/inventory/issues
+POST   /api/v1/inventory/issues
+GET    /api/v1/inventory/issues/{id}
+PATCH  /api/v1/inventory/issues/{id}
+
+POST   /api/v1/inventory/issues/{id}/approve
+POST   /api/v1/inventory/issues/{id}/post
+POST   /api/v1/inventory/issues/{id}/cancel
+
+==================================================
+60. RETURN API
+==================================================
+
+GET    /api/v1/inventory/returns
+POST   /api/v1/inventory/returns
+GET    /api/v1/inventory/returns/{id}
+
+POST   /api/v1/inventory/returns/{id}/post
+
+==================================================
+61. TRANSFER API
+==================================================
+
+GET    /api/v1/inventory/transfers
+POST   /api/v1/inventory/transfers
+GET    /api/v1/inventory/transfers/{id}
+PATCH  /api/v1/inventory/transfers/{id}
+
+POST   /api/v1/inventory/transfers/{id}/approve
+POST   /api/v1/inventory/transfers/{id}/dispatch
+POST   /api/v1/inventory/transfers/{id}/receive
+POST   /api/v1/inventory/transfers/{id}/cancel
+
+==================================================
+62. INVENTORY REQUEST API
+==================================================
+
+GET    /api/v1/inventory/requests
+POST   /api/v1/inventory/requests
+GET    /api/v1/inventory/requests/{id}
+PATCH  /api/v1/inventory/requests/{id}
+
+POST   /api/v1/inventory/requests/{id}/submit
+POST   /api/v1/inventory/requests/{id}/approve
+POST   /api/v1/inventory/requests/{id}/reject
+POST   /api/v1/inventory/requests/{id}/cancel
+
+Provide action to create an issue from approved request.
+
+==================================================
+63. RESERVATION API
+==================================================
+
+GET    /api/v1/inventory/reservations
+POST   /api/v1/inventory/reservations
+
+POST   /api/v1/inventory/reservations/{id}/release
+POST   /api/v1/inventory/reservations/{id}/cancel
+
+==================================================
+64. STOCK COUNT API
+==================================================
+
+GET    /api/v1/inventory/stock-counts
+POST   /api/v1/inventory/stock-counts
+GET    /api/v1/inventory/stock-counts/{id}
+
+POST   /api/v1/inventory/stock-counts/{id}/start
+POST   /api/v1/inventory/stock-counts/{id}/submit
+POST   /api/v1/inventory/stock-counts/{id}/approve
+POST   /api/v1/inventory/stock-counts/{id}/post
+
+==================================================
+65. ADJUSTMENT API
+==================================================
+
+GET    /api/v1/inventory/adjustments
+POST   /api/v1/inventory/adjustments
+GET    /api/v1/inventory/adjustments/{id}
+
+POST   /api/v1/inventory/adjustments/{id}/approve
+POST   /api/v1/inventory/adjustments/{id}/post
+POST   /api/v1/inventory/adjustments/{id}/cancel
+
+==================================================
+66. FORECAST API
+==================================================
+
+Implement:
+
+GET /api/v1/inventory/forecast
+
+Filters:
+
+store_id
+category_id
+project_id
+criticality
+days
+
+Return:
+
+item
+available_stock
+average_daily_usage
+days_remaining
+estimated_stockout_date
+lead_time
+reorder_status
+recommended_order_quantity
+
+Also:
+
+GET /api/v1/inventory/reorder-recommendations
+
+==================================================
+67. LOW STOCK / OUT OF STOCK API
+==================================================
+
+Implement:
+
+GET /api/v1/inventory/low-stock
+
+GET /api/v1/inventory/out-of-stock
+
+GET /api/v1/inventory/critical-stock
+
+GET /api/v1/inventory/dead-stock
+
+GET /api/v1/inventory/slow-moving
+
+GET /api/v1/inventory/expiring
+
+==================================================
+68. SEARCH AND FILTERING
+==================================================
+
+Inventory item search should match:
+
+item_number
+SKU
+name
+description
+manufacturer
+manufacturer_part_number
+internal_part_number
+barcode
+QR code
+
+Filters:
+
+category_id
+store_id
+supplier_id
+criticality
+tracking_method
+is_consumable
+is_spare_part
+is_active
+reorder_status
+has_stock
+low_stock
+out_of_stock
+
+Use pagination.
+
+Do not load entire inventory tables into memory.
+
+==================================================
+69. BARCODE / QR LOOKUP
+==================================================
+
+Implement:
+
+GET /api/v1/inventory/lookup?code=...
+
+Lookup should support:
+
+item barcode
+item QR
+serial number
+item number
+SKU
+
+This prepares the system for future mobile scanning.
+
+==================================================
+70. PROJECT INVENTORY VIEW
+==================================================
+
+Implement:
+
+GET /api/v1/projects/{project_id}/inventory-summary
+
+Return:
+
+inventory currently held at project stores
+
+inventory value
+
+items consumed
+
+consumption by category
+
+top consumed items
+
+low stock
+
+critical stock
+
+recent issues
+
+recent receipts/transfers
+
+Do not confuse:
+
+stock physically located at project
+
+with:
+
+stock consumed by project.
+
+These are different metrics.
+
+==================================================
+71. ASSET CONSUMPTION VIEW
+==================================================
+
+Implement:
+
+GET /api/v1/assets/{asset_id}/inventory-consumption
+
+Return:
+
+parts issued
+
+consumables issued
+
+lubricants issued
+
+quantity
+
+cost
+
+date
+
+project
+
+employee
+
+future work order reference
+
+This will later integrate with Maintenance.
+
+==================================================
+72. EMPLOYEE ISSUE VIEW
+==================================================
+
+Implement:
+
+GET /api/v1/employees/{employee_id}/inventory-issued
+
+Useful for:
+
+PPE
+tools
+equipment
+other returnable inventory
+
+Distinguish consumable items from returnable items.
+
+==================================================
+73. RETURNABLE ITEMS
+==================================================
+
+For items such as tools or reusable equipment, support custody.
+
+Implement:
+
+inventory_custody
+
+Fields:
+
+id
+organization_id
+
+item_id
+serial_id nullable
+
+employee_id nullable
+asset_id nullable
+project_id nullable
+
+quantity
+
+issued_at
+expected_return_at nullable
+returned_at nullable
+
+condition_at_issue nullable
+condition_at_return nullable
+
+status
+
+issue_id
+
+notes nullable
+
+Status:
+
+ISSUED
+RETURNED
+OVERDUE
+LOST
+DAMAGED
+
+This allows Cestos to know:
+
+"Which tools are currently with this employee?"
+
+==================================================
+74. STOCK RECONCILIATION
+==================================================
+
+Implement an administrative reconciliation service.
+
+It should compare:
+
+ledger-derived stock
+
+against
+
+inventory_balances projection
+
+If differences exist:
+
+report them.
+
+Do NOT silently fix them.
+
+Provide an administrative endpoint such as:
+
+GET /api/v1/inventory/reconciliation
+
+Restricted permission required.
+
+==================================================
+75. CONCURRENCY CONTROL
+==================================================
+
+This is critical.
+
+Two storekeepers must not be able to simultaneously issue the final
+10 units of an item.
+
+Use PostgreSQL transaction/locking strategy when posting stock movements.
+
+Appropriate options may include:
+
+SELECT ... FOR UPDATE
+
+on relevant inventory balance rows.
+
+Posting must be atomic.
+
+Example:
+
+Available stock = 10
+
+Request A = 8
+Request B = 5
+
+Both must not succeed.
+
+One should succeed and the other receive insufficient-stock error.
+
+Write a concurrency test if practical.
+
+==================================================
+76. IDEMPOTENCY
+==================================================
+
+Prevent duplicate posting caused by:
+
+double-click
+network retry
+API retry
+
+Posting endpoints should be idempotent where practical.
+
+A receipt must not accidentally post twice.
+
+An issue must not deduct stock twice.
+
+A transfer receipt must not add stock twice.
+
+Use document status plus transaction integrity and, if appropriate,
+idempotency keys.
+
+==================================================
+77. REVERSALS
+==================================================
+
+Posted transactions should not simply be deleted.
+
+Implement reversal architecture.
+
+A reversal should:
+
+reference original transaction
+create opposite ledger effect
+preserve original transaction
+record reason
+record actor
+record timestamp
+
+Example:
+
+Original:
+ISSUE -50 L
+
+Correction:
+REVERSAL +50 L
+
+Then create correct transaction if needed.
+
+==================================================
+78. AUDIT LOGGING
+==================================================
+
+Audit at minimum:
+
+inventory.item_created
+inventory.item_updated
+inventory.item_archived
+
+inventory.receipt_created
+inventory.receipt_posted
+
+inventory.issue_created
+inventory.issue_approved
+inventory.issue_posted
+
+inventory.return_posted
+
+inventory.transfer_created
+inventory.transfer_approved
+inventory.transfer_dispatched
+inventory.transfer_received
+
+inventory.request_created
+inventory.request_approved
+inventory.request_rejected
+
+inventory.adjustment_created
+inventory.adjustment_approved
+inventory.adjustment_posted
+
+inventory.stock_count_started
+inventory.stock_count_submitted
+inventory.stock_count_posted
+
+inventory.reservation_created
+inventory.reservation_released
+
+inventory.quarantined
+inventory.quarantine_released
+
+inventory.writeoff_posted
+
+inventory.transaction_reversed
+
+inventory.policy_updated
+
+Do not store entire binary documents in audit logs.
+
+==================================================
+79. PERMISSIONS
+==================================================
+
+Create granular permissions.
+
+Examples:
+
+inventory.read
+
+inventory.items.create
+inventory.items.update
+inventory.items.archive
+
+inventory.receipts.read
+inventory.receipts.create
+inventory.receipts.post
+
+inventory.issues.read
+inventory.issues.create
+inventory.issues.approve
+inventory.issues.post
+
+inventory.returns.read
+inventory.returns.create
+inventory.returns.post
+
+inventory.transfers.read
+inventory.transfers.create
+inventory.transfers.approve
+inventory.transfers.dispatch
+inventory.transfers.receive
+
+inventory.requests.read
+inventory.requests.create
+inventory.requests.approve
+
+inventory.reservations.read
+inventory.reservations.manage
+
+inventory.adjustments.read
+inventory.adjustments.create
+inventory.adjustments.approve
+inventory.adjustments.post
+
+inventory.stock_counts.read
+inventory.stock_counts.create
+inventory.stock_counts.approve
+inventory.stock_counts.post
+
+inventory.costs.read
+
+inventory.forecast.read
+
+inventory.reconciliation.read
+
+inventory.override_negative_stock
+
+inventory.transactions.reverse
+
+inventory.admin
+
+Map sensible defaults to existing roles.
+
+Storekeeper:
+operational receipt/issue/transfer functions
+
+Store Manager:
+approve and manage stores
+
+Operations Manager:
+read + operational approvals
+
+Project Manager:
+project inventory visibility and requests
+
+Maintenance Manager:
+read stock and request parts
+
+Finance:
+inventory value/cost visibility
+
+CEO:
+full read
+
+Auditor:
+read ledger/audit/reconciliation
+
+Administrator:
+all
+
+==================================================
+80. COST VISIBILITY
+==================================================
+
+Not every employee should see:
+
+unit cost
+inventory value
+supplier pricing
+total cost
+
+Create:
+
+InventoryOperationalResponse
+
+and:
+
+InventoryFinancialResponse
+
+or equivalent field-level permission handling.
+
+Storekeeper may need quantities without full financial valuation.
+
+Finance/CEO/authorized management may see costs.
+
+==================================================
+81. ORGANIZATION ISOLATION
+==================================================
+
+Every inventory operation must enforce organization isolation.
+
+A user from Organization A must never:
+
+view
+receive
+issue
+transfer
+adjust
+reserve
+
+Organization B inventory.
+
+Validate organization on every relationship:
+
+item
+store
+bin
+project
+asset
+employee
+supplier
+lot
+serial
+transaction
+
+Do not rely on frontend filtering.
+
+==================================================
+82. DATABASE CONSTRAINTS
+==================================================
+
+Use real DB constraints.
+
+Examples:
+
+quantity > 0
+
+unique item number per organization
+
+unique store number per organization
+
+unique lot where appropriate
+
+unique serial number per organization/item where appropriate
+
+expiry >= manufacture/receipt dates where appropriate
+
+from_store != to_store for transfers
+
+stock-count variance calculated consistently
+
+Do not rely exclusively on Pydantic validation.
+
+==================================================
+83. DATABASE INDEXES
+==================================================
+
+Add indexes for frequently queried fields.
+
+At minimum:
+
+inventory_items.organization_id
+inventory_items.item_number
+inventory_items.sku
+inventory_items.category_id
+inventory_items.name
+
+inventory_transactions.organization_id
+inventory_transactions.item_id
+inventory_transactions.transaction_type
+inventory_transactions.transaction_date
+inventory_transactions.from_store_id
+inventory_transactions.to_store_id
+inventory_transactions.project_id
+inventory_transactions.asset_id
+inventory_transactions.employee_id
+
+inventory_balances.item_id
+inventory_balances.store_id
+
+inventory_lots.item_id
+inventory_lots.expiry_date
+
+inventory_serials.item_id
+inventory_serials.serial_number
+
+inventory_requests.status
+inventory_requests.project_id
+
+inventory_transfers.status
+
+inventory_receipts.received_at
+
+inventory_issues.issued_at
+
+==================================================
+84. DATA IMPORT
+==================================================
+
+Cestos may already have inventory in Excel.
+
+Prepare bulk import functionality.
+
+Support CSV/XLSX import architecture for:
+
+item master
+opening stock
+stock policies
+
+Do NOT allow imported stock quantities to bypass ledger creation.
+
+Opening stock import must create:
+
+OPENING_BALANCE
+
+transactions.
+
+Import workflow should support:
+
+upload
+validate
+preview
+show errors
+confirm
+import
+
+Do not partially import invalid files silently.
+
+If spreadsheet parsing is not already available, implement CSV first and
+leave XLSX as documented extension.
+
+==================================================
+85. EXPORT
+==================================================
+
+Support export of:
+
+item master
+current stock
+stock by store
+transaction ledger
+low stock
+reorder recommendations
+stock counts
+consumption
+
+CSV is sufficient initially.
+
+Respect permissions for cost fields.
+
+==================================================
+86. REPORTS
+==================================================
+
+Create service/API foundations for:
+
+Stock On Hand Report
+
+Stock Valuation Report
+
+Inventory Movement Report
+
+Receipts Report
+
+Issues Report
+
+Project Consumption Report
+
+Asset Consumption Report
+
+Employee Issue Report
+
+Stock Adjustment Report
+
+Stock Count Variance Report
+
+Low Stock Report
+
+Out of Stock Report
+
+Reorder Report
+
+Dead Stock Report
+
+Slow Moving Stock Report
+
+Stock Aging Report
+
+Expiring Stock Report
+
+Inventory Audit Trail
+
+Do not build PDF generation unless requested separately.
+
+==================================================
+87. INVENTORY ALERT CONDITIONS
+==================================================
+
+Prepare alert conditions:
+
+LOW_STOCK
+
+OUT_OF_STOCK
+
+CRITICAL_STOCK
+
+REORDER_REQUIRED
+
+STOCKOUT_BEFORE_SUPPLIER_LEAD_TIME
+
+EXPIRING_STOCK
+
+EXPIRED_STOCK
+
+PENDING_TRANSFER_TOO_LONG
+
+PENDING_REQUEST_TOO_LONG
+
+LARGE_STOCK_ADJUSTMENT
+
+UNUSUAL_CONSUMPTION
+
+Do not implement AI anomaly detection yet.
+
+Simple rule-based alerts are sufficient.
+
+==================================================
+88. FUTURE MAINTENANCE INTEGRATION
+==================================================
+
+The future Maintenance module must be able to perform:
+
+WORK ORDER
+    ↓
+PART REQUEST
+    ↓
+INVENTORY ISSUE
+    ↓
+PART INSTALLED
+    ↓
+ASSET
+    ↓
+MAINTENANCE COST
+
+Therefore inventory issues must support future:
+
+work_order_id
+
+Do not tightly couple the module before Maintenance exists.
+
+Use nullable FK later through migration or existing generic reference
+architecture if that is cleaner.
+
+==================================================
+89. FUTURE PROCUREMENT INTEGRATION
+==================================================
+
+The future Procurement flow should become:
+
+LOW STOCK
+    ↓
+REORDER RECOMMENDATION
+    ↓
+PURCHASE REQUEST
+    ↓
+APPROVAL
+    ↓
+RFQ
+    ↓
+SUPPLIER QUOTE
+    ↓
+PURCHASE ORDER
+    ↓
+GOODS RECEIPT
+    ↓
+INVENTORY RECEIPT
+    ↓
+AVAILABLE STOCK
+
+Do not duplicate procurement functionality if it already exists.
+
+==================================================
+90. FUTURE DRILLING OPERATIONS INTEGRATION
+==================================================
+
+Eventually:
+
+Drilling Shift
+     ↓
+Project
+     ↓
+Rig
+     ↓
+Metres Drilled
+     ↓
+Consumables Used
+
+This will allow:
+
+drill bits per metre
+oil per metre
+consumables cost per metre
+parts cost per rig
+project consumable cost
+
+Ensure current transaction model can support these relationships later.
+
+==================================================
+91. FUTURE AI / PREDICTIVE INVENTORY
+==================================================
+
+Do NOT implement LLM-based inventory forecasting now.
+
+Structured data must come first.
+
+Future predictive models may consider:
+
+historical consumption
+project schedules
+number of active rigs
+asset operating hours
+maintenance plans
+supplier lead time
+seasonality
+project mobilizations
+
+Current deterministic forecasting should provide a reliable baseline.
+
+==================================================
+92. TESTING
+==================================================
+
+Create comprehensive tests.
+
+At minimum test:
+
+Category creation
+
+Nested categories
+
+Unit creation
+
+Unit conversion
+
+Item creation
+
+Item number generation
+
+Duplicate item protection
+
+Store creation
+
+Bin creation
+
+Receipt creation
+
+Receipt posting
+
+Receipt increases stock
+
+Issue creation
+
+Issue approval
+
+Issue posting
+
+Issue reduces stock
+
+Prevent issue above available quantity
+
+Return increases appropriate stock
+
+Damaged return goes to quarantine
+
+Transfer creation
+
+Transfer dispatch
+
+Transfer creates in-transit state
+
+Transfer receive
+
+Destination stock increases
+
+Source stock decreases
+
+Prevent invalid transfer
+
+Reservation creation
+
+Reservation reduces available but not on-hand
+
+Reservation release
+
+Stock adjustment
+
+Adjustment approval
+
+Stock count
+
+Stock count variance
+
+Stock count posting
+
+Lot tracking
+
+Expiry tracking
+
+Block expired lot issue
+
+Serial tracking
+
+Prevent duplicate serial
+
+Weighted average cost
+
+Historical stock reconstruction
+
+Consumption calculation
+
+Forecast calculation
+
+Zero-consumption forecast
+
+Reorder recommendation
+
+Low stock query
+
+Out-of-stock query
+
+Dead stock query
+
+Project inventory summary
+
+Asset consumption summary
+
+Employee issued-items summary
+
+Item overview
+
+Store dashboard
+
+Inventory dashboard
+
+Transaction ledger filters
+
+Transaction reversal
+
+Posted transaction cannot be freely edited
+
+Idempotent posting
+
+Concurrency protection
+
+Organization isolation
+
+Permission checks
+
+Cost visibility
+
+Audit events
+
+Pagination
+
+Search
+
+==================================================
+93. MIGRATIONS
+==================================================
+
+Create NEW Alembic migrations.
+
+Do not modify already-applied migrations.
+
+Add all:
+
+tables
+indexes
+constraints
+foreign keys
+
+Test:
+
+alembic upgrade head
+
+alembic downgrade one revision where safe
+
+alembic upgrade head
+
+Ensure migrations work from a clean database.
+
+==================================================
+94. DEMO DATA
+==================================================
+
+Extend development seed data.
+
+Create realistic dummy categories:
+
+Drilling Consumables
+Mechanical Spares
+Hydraulics
+Lubricants
+Electrical
+PPE
+Tools
+
+Create items such as:
+
+Engine Oil 15W-40
+Hydraulic Oil
+Grease
+Oil Filter
+Fuel Filter
+Air Filter
+Hydraulic Hose
+Bearing
+Battery
+Drill Bit
+Drill Rod
+Core Tray
+Safety Helmet
+Safety Gloves
+Safety Boots
+
+Create stores:
+
+Main Warehouse
+Main Workshop Store
+Project Alpha Store
+Project Bravo Store
+
+Create realistic:
+
+opening balances
+receipts
+issues
+transfers
+returns
+stock policies
+
+Link some issues to:
+
+projects
+assets
+employees
+
+Do not use real confidential company data.
+
+==================================================
+95. INVENTORY RELATIONSHIP MODEL
+==================================================
+
+The resulting architecture should conceptually resemble:
+
+                         ORGANIZATION
+                              |
+                       INVENTORY ITEM
+                              |
+       +----------------------+----------------------+
+       |                      |                      |
+    CATEGORY               UNIT                 SUPPLIERS
+       |
+       +---- STOCK POLICY
+       |
+       +---- LOTS
+       |
+       +---- SERIALS
+       |
+       +---- BALANCES
+       |
+       +---- TRANSACTIONS
+                 |
+        +--------+---------+---------+----------+
+        |        |         |         |          |
+      STORE    PROJECT    ASSET    EMPLOYEE   SUPPLIER
+        |
+       BIN
+
+Transactions originate from:
+
+RECEIPTS
+ISSUES
+RETURNS
+TRANSFERS
+ADJUSTMENTS
+STOCK COUNTS
+WRITE-OFFS
+
+==================================================
+96. END-TO-END TRACEABILITY EXAMPLE
+==================================================
+
+The system should support a complete trace such as:
+
+Supplier
+   ↓
+200 litres Engine Oil received
+   ↓
+Main Warehouse
+   ↓
+Receipt GRN-000231
+   ↓
+Inventory Ledger
+   ↓
+50 litres transferred
+   ↓
+Project Alpha Store
+   ↓
+20 litres requested
+   ↓
+Request approved
+   ↓
+20 litres issued
+   ↓
+Rig CDR-001
+   ↓
+Received by Mechanic EMP-00123
+   ↓
+Future Work Order WO-000441
+   ↓
+20 litres consumed
+   ↓
+Project Alpha Cost
+   ↓
+Asset Maintenance Cost
+
+At any point management should be able to trace the 20 litres back to
+the original stock source and responsible transactions.
+
+==================================================
+97. INVENTORY DASHBOARD EXAMPLE
+==================================================
+
+The API should eventually support a dashboard such as:
+
+INVENTORY VALUE
+$428,500
+
+ACTIVE ITEMS
+1,284
+
+LOW STOCK
+43
+
+OUT OF STOCK
+11
+
+CRITICAL STOCK
+7
+
+REORDER REQUIRED
+28
+
+IN TRANSIT
+$31,200
+
+QUARANTINED
+$4,800
+
+----------------------------------
+
+CONSUMPTION THIS MONTH
+
+Project Alpha      $42,800
+Project Bravo      $31,200
+Main Workshop      $18,400
+
+----------------------------------
+
+TOP CONSUMED ITEMS
+
+Engine Oil
+Drill Bits
+Fuel Filters
+Hydraulic Oil
+Grease
+
+----------------------------------
+
+STOCKOUT RISK
+
+Oil Filter
+Available: 14
+Usage: 1.2/day
+Days Remaining: 12
+Lead Time: 21 days
+REORDER NOW
+
+==================================================
+98. IMPORTANT BUSINESS QUESTIONS
+==================================================
+
+After implementation the platform must be able to answer:
+
+How much inventory do we currently have?
+
+What is its total value?
+
+What is in the Main Warehouse?
+
+What is at Project Alpha?
+
+What is physically in transit?
+
+Which items are reserved?
+
+Which items are quarantined?
+
+Which items are out of stock?
+
+Which items are below minimum?
+
+Which critical items are low?
+
+What should we order?
+
+How much should we order?
+
+When will Engine Oil run out?
+
+Which supplier normally supplies Engine Oil?
+
+What did we receive this month?
+
+What did we issue this month?
+
+Who issued it?
+
+Who received it?
+
+Which project consumed it?
+
+Which asset consumed it?
+
+Which employee currently holds a tool?
+
+How much inventory did Project Alpha consume?
+
+How much inventory did CDR-001 consume?
+
+Which items have not moved in six months?
+
+Which items are expiring?
+
+What adjustments were made?
+
+Who approved them?
+
+What was our stock on a historical date?
+
+Does the current balance agree with the transaction ledger?
+
+==================================================
+99. IMPLEMENTATION ORDER
+==================================================
+
+Execute in this order:
+
+STEP 1
+Inspect existing repository.
+
+STEP 2
+Identify existing:
+organizations
+locations
+projects
+assets
+employees
+suppliers
+approvals
+business counters
+audit service
+
+STEP 3
+Implement units and categories.
+
+STEP 4
+Implement item master.
+
+STEP 5
+Implement stores and bins.
+
+STEP 6
+Implement stock policies.
+
+STEP 7
+Implement lots and serial tracking.
+
+STEP 8
+Implement transaction ledger.
+
+STEP 9
+Implement transactional balance projection.
+
+STEP 10
+Implement receipts.
+
+STEP 11
+Implement issues.
+
+STEP 12
+Implement returns.
+
+STEP 13
+Implement transfers and in-transit stock.
+
+STEP 14
+Implement reservations.
+
+STEP 15
+Implement requests / approval integration.
+
+STEP 16
+Implement adjustments.
+
+STEP 17
+Implement stock counts.
+
+STEP 18
+Implement quarantine/write-offs.
+
+STEP 19
+Implement valuation.
+
+STEP 20
+Implement item suppliers.
+
+STEP 21
+Implement asset compatibility.
+
+STEP 22
+Implement returnable-item custody.
+
+STEP 23
+Implement consumption analytics.
+
+STEP 24
+Implement stock depletion forecasting.
+
+STEP 25
+Implement reorder recommendations.
+
+STEP 26
+Implement slow/dead stock analytics.
+
+STEP 27
+Implement item 360 overview.
+
+STEP 28
+Implement store dashboard.
+
+STEP 29
+Implement inventory dashboard.
+
+STEP 30
+Implement project inventory summary.
+
+STEP 31
+Implement asset consumption endpoint.
+
+STEP 32
+Implement employee-issued inventory endpoint.
+
+STEP 33
+Implement transaction ledger/history.
+
+STEP 34
+Implement reconciliation.
+
+STEP 35
+Implement RBAC.
+
+STEP 36
+Implement audit events.
+
+STEP 37
+Create migrations.
+
+STEP 38
+Extend demo data.
+
+STEP 39
+Write tests.
+
+STEP 40
+Run:
+
+lint
+type checks
+tests
+migration validation
+application startup
+
+Fix failures before declaring completion.
+
+==================================================
+100. ACCEPTANCE TEST SCENARIO
+==================================================
+
+Before declaring this phase complete, perform an end-to-end scenario.
+
+SCENARIO:
+
+1. Create item:
+   Engine Oil 15W-40
+
+2. Base unit:
+   Litre
+
+3. Create:
+   Main Warehouse
+
+4. Receive:
+   1,000 litres
+
+Expected:
+On Hand = 1,000
+Available = 1,000
+
+5. Transfer 300 L to Project Alpha Store.
+
+After dispatch:
+
+Main Warehouse:
+700 L
+
+In Transit:
+300 L
+
+Project Alpha available:
+0 L until receipt
+
+6. Receive transfer at Project Alpha.
+
+Expected:
+
+Main Warehouse:
+700 L
+
+Project Alpha:
+300 L
+
+In Transit:
+0
+
+7. Reserve 50 L at Project Alpha.
+
+Expected:
+
+On Hand:
+300
+
+Reserved:
+50
+
+Available:
+250
+
+8. Issue 100 L to:
+
+Project Alpha
+Rig CDR-001
+Employee EMP-xxxxx
+
+Expected:
+
+On Hand:
+200
+
+Reserved:
+50
+
+Available:
+150
+
+9. Attempt to issue 200 L.
+
+Expected:
+
+REJECTED due to insufficient available stock.
+
+10. Return 20 L in GOOD condition.
+
+Expected:
+
+On Hand:
+220
+
+Available:
+170
+
+11. Return 10 L DAMAGED.
+
+Expected:
+
+On Hand includes physical stock according to chosen accounting model,
+but 10 L is quarantined and unavailable.
+
+12. Perform stock count.
+
+Physical quantity differs from system by -5 L.
+
+Create adjustment.
+
+Require approval.
+
+Post adjustment.
+
+13. Verify transaction ledger reconstructs current balance.
+
+14. Verify Project Alpha consumption.
+
+15. Verify CDR-001 consumption.
+
+16. Verify employee issue history.
+
+17. Verify weighted average inventory value.
+
+18. Verify forecast.
+
+19. Verify reorder recommendation.
+
+20. Verify all events appear in audit history.
+
+==================================================
+101. CRITICAL INVARIANTS
+==================================================
+
+The implementation is NOT complete if any of these can happen:
+
+- Stock changes without a ledger transaction.
+- Posted transactions can simply be deleted.
+- Posted transactions can be freely edited.
+- A transfer can disappear between stores.
+- Two concurrent issues can create accidental negative stock.
+- Expired/quarantined stock can be issued normally.
+- An employee can access another organization's stock.
+- An adjustment can occur without a reason.
+- Historical inventory cannot be reconstructed.
+- Inventory balances disagree silently with ledger.
+- Cost calculations use floating-point values.
+- Transfers are counted as consumption.
+- Reserved stock is treated as freely available.
+- In-transit stock is treated as destination available stock.
+- A retry can post the same issue twice.
+- Serial numbers can be issued twice simultaneously.
+
+==================================================
+102. DO NOT IMPLEMENT YET
+==================================================
+
+Do NOT fully implement:
+
+Purchase Requests to external suppliers
+RFQ workflows
+Supplier quotations
+Purchase Orders
+Invoice matching
+Accounts Payable
+Fuel management
+Maintenance work orders
+Drilling production
+Payroll
+Full financial accounting
+Machine-learning forecasting
+AI inventory assistant
+
+Those belong to later modules.
+
+However, ensure the Inventory domain can integrate with them cleanly.
+
+==================================================
+103. FINAL DELIVERY REPORT
+==================================================
+
+After implementation provide:
+
+1. Inventory architecture summary
+
+2. Tables created
+
+3. Relationships created
+
+4. Migrations created
+
+5. Endpoints created
+
+6. Permissions added
+
+7. Audit events added
+
+8. Stock calculation strategy
+
+9. Inventory valuation strategy
+
+10. Concurrency strategy
+
+11. Idempotency strategy
+
+12. Forecasting/reorder logic
+
+13. Demo data added
+
+14. Tests added
+
+15. Exact test results
+
+16. Migration validation results
+
+17. Known limitations
+
+18. Existing architecture decisions that affected implementation
+
+19. Any deferred functionality
+
+20. Recommended next phase
+
+Do NOT automatically start another phase.
+
+==================================================
+104. DEFINITION OF DONE
+==================================================
+
+This phase is only complete when Cestos has a functioning inventory
+ledger capable of tracking an item from arrival to final consumption.
+
+The fundamental trace must be:
+
+SUPPLIER / SOURCE
+       ↓
+    RECEIPT
+       ↓
+     STORE
+       ↓
+      STOCK
+       ↓
+ REQUEST / RESERVATION
+       ↓
+     ISSUE
+       ↓
+ PROJECT / ASSET / EMPLOYEE
+       ↓
+  CONSUMPTION
+       ↓
+      COST
+
+And management must always be able to determine:
+
+WHAT moved
+HOW MUCH moved
+FROM WHERE
+TO WHERE
+WHEN
+WHY
+FOR WHICH PROJECT
+FOR WHICH ASSET
+FOR WHICH EMPLOYEE
+WHO REQUESTED IT
+WHO APPROVED IT
+WHO ISSUED IT
+WHO RECEIVED IT
+WHAT IT COST
+AND WHAT STOCK REMAINS
+
+This traceability is the central requirement of the Cestos Inventory
+Management System.

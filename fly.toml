@@ -1,0 +1,31 @@
+# fly.toml app configuration file for CestosOversight
+# Generated on 2026-09-08T14:44:54Z
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+
+app = 'cestos-oversight'
+primary_region = 'ams'
+
+[build]
+
+[env]
+  ENVIRONMENT = 'production'
+  PORT = '8000'
+  LOG_LEVEL = 'info'
+  TZ = 'UTC'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'off'      # Disable auto-stop - machine never sleeps
+  auto_start_machines = true
+  min_machines_running = 1        # Always keep at least 1 machine running
+
+[metrics]
+  port = 9091
+  path = '/metrics'
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 512
