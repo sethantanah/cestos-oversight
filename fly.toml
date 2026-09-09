@@ -9,7 +9,7 @@ primary_region = 'lhr'
 [build]
 
 [env]
-  ENVIRONMENT = 'production'
+  APP_ENV = 'production'
   LOG_LEVEL = 'info'
   PORT = '8000'
   TZ = 'UTC'

@@ -35,6 +35,7 @@ def test_supabase_auth_sync_creates_user_and_tracks_id(monkeypatch):
     settings = Settings(
         _env_file=None,
         app_env="production",
+        storage_provider="supabase",
         database_url="postgresql+psycopg://user:pass@localhost:5432/cestos_prod",
         jwt_secret_key="a-test-only-secret-that-is-over-32-characters",
         supabase_auth_enabled=True,
@@ -62,6 +63,7 @@ def test_supabase_auth_sync_is_noop_when_disabled():
     settings = Settings(
         _env_file=None,
         app_env="production",
+        storage_provider="supabase",
         database_url="postgresql+psycopg://user:pass@localhost:5432/cestos_prod",
         jwt_secret_key="a-test-only-secret-that-is-over-32-characters",
         supabase_auth_enabled=False,

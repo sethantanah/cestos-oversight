@@ -37,6 +37,9 @@ FINANCIAL = {
     "average_unit_cost",
     "total_inventory_value",
     "total_consumption_cost",
+    "inventory_value_by_category",
+    "inventory_value_by_store",
+    "inventory_value_by_currency",
 }
 MASTERS = {
     "categories": m.InventoryCategory,
@@ -462,7 +465,7 @@ class InventoryService:
     async def document(self, kind: str, identifier: uuid.UUID) -> Any:
         model, lines, _ = DOCUMENTS[kind]
         row = await self.ref(model, identifier)
-        return {
+        result = {
             **self.public(row),
             "items": self.public(
                 list(
@@ -476,6 +479,15 @@ class InventoryService:
                 )
             ),
         }
+        for key in ("store_id", "from_store_id", "to_store_id", "supplier_id", "project_id", "asset_id", "employee_id"):
+            identifier = getattr(row, key, None)
+            if identifier:
+                related = await self.ref(REFS[key], identifier)
+                result[key.removesuffix("_id")] = (
+                    f"{related.first_name} {related.last_name}"
+                    if key == "employee_id" else related.name
+                )
+        return result
 
     async def document_save(self, kind: str, body: Any, identifier: uuid.UUID | None = None) -> Any:
         await self.lock()
@@ -683,12 +695,22 @@ class InventoryService:
                         raise ValidationError("Provide a nonnegative count for every line")
                     line.counted_quantity = value
             doc.status = "SUBMITTED"
-        elif action == "start":
-            if kind != "stock-counts" or doc.status != "DRAFT":
-                raise ConflictError("Count must be a draft")
+        elif action in {"start", "restart"}:
+            if (
+                kind != "stock-counts"
+                or doc.status in {"POSTED", "CANCELLED"}
+                or (action == "start" and doc.status != "DRAFT")
+            ):
+                raise ConflictError("Count cannot be started in its current state")
+            if action == "restart" and not body.reason:
+                raise ValidationError("Explain why the count is being restarted")
+            doc.approved_by_id = None
+            doc.approved_at = None
             for line in lines:
                 bucket = await self.bucket(line.item_id, doc.store_id, line.bin_id, line.lot_id)
                 line.system_quantity = bucket.quantity_on_hand
+                if action == "restart":
+                    line.counted_quantity = None
             doc.status = "IN_PROGRESS"
         elif action == "approve":
             expected_statuses = {
@@ -754,6 +776,7 @@ class InventoryService:
                 "dispatch": "dispatched",
                 "receive": "received",
                 "start": "started",
+                "restart": "restarted",
                 "submit": "submitted",
                 "cancel": "cancelled",
                 "reject": "rejected",
@@ -1044,7 +1067,11 @@ class InventoryService:
                 delta = q if purpose == "POSITIVE_ADJUSTMENT" else -q
                 txkind = purpose
             if delta > 0:
-                cost = line.unit_cost if line.unit_cost is not None else cost
+                cost = (
+                    line.unit_cost * line.quantity / line.normalized_quantity
+                    if line.unit_cost is not None
+                    else cost
+                )
             tx = await self.transaction(doc, line, txkind, cost, quantity=q)
             if purpose == "QUARANTINE":
                 await self.effect(tx, bucket, quantity_quarantined=q)

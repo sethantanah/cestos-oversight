@@ -2,11 +2,13 @@
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.orm import selectinload
 
+from app.models import inventory as m
 from app.tests.test_asset_domain import (
     make_asset,
     make_category,
@@ -238,12 +240,12 @@ async def test_inventory_concurrent_issue_and_weighted_average(client, identitie
 async def test_inventory_permissions_isolation_and_cost_redaction(
     client, identities, session_factory
 ):
-    from app.models import User, Role, Permission
+    from app.models import Permission, Role, User
     from app.tests.conftest import login
 
     h, u, c, item, stores = await setup(client, identities, session_factory)
     async with session_factory() as session:
-        user = await session.get(User, identities["denied"].id)
+        user = await session.get(User, identities["denied"].id, options=[selectinload(User.roles)])
         read = Permission(code="inventory.read")
         session.add(read)
         user.roles = [

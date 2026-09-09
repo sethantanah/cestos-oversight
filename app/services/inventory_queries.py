@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.orm import aliased
 
+from app.models import Project
 from app.models import inventory as m
 from app.models.audit_log import AuditLog
 from app.services.inventory import BUCKET_FIELDS, DOCUMENTS, MASTERS, ZERO, InventoryService
@@ -495,6 +496,12 @@ class InventoryQueries(InventoryService):
             "receipts", {"store_id": store_id}, page_size=5
         )
         result["recent_issues"] = await self.listing("issues", {"store_id": store_id}, page_size=5)
+        result.update(await self.dashboard_extras(store_id))
+        if len(result["inventory_value_by_currency"]) > 1:
+            result["total_inventory_value"] = None
+        result["pending_approvals"] = (result.get("pending_requests") or 0) + (
+            result.get("pending_adjustments") or 0
+        )
         return self.public(result)
 
     async def alerts(
@@ -635,3 +642,121 @@ class InventoryQueries(InventoryService):
         return await self.page(
             query.order_by(agg.c.consumption.desc(), m.InventoryItem.id), page, page_size, False
         )
+
+    async def dashboard_extras(self, store_id: uuid.UUID | None = None) -> dict[str, Any]:
+        b = m.InventoryBalance
+        item = m.InventoryItem
+        lot = m.InventoryLot
+        model: Any
+        base = (
+            select(func.count(func.distinct(b.item_id)))
+            .join(lot, b.lot_id == lot.id)
+            .where(b.organization_id == self.org, b.quantity_on_hand > 0)
+        )
+        if store_id:
+            base = base.where(b.store_id == store_id)
+        result: dict[str, Any] = {
+            "expired_inventory": await self.session.scalar(
+                base.where(lot.expiry_date < date.today())
+            ),
+            "expiring_inventory": await self.session.scalar(
+                base.where(
+                    lot.expiry_date >= date.today(),
+                    lot.expiry_date <= date.today() + timedelta(days=30),
+                )
+            ),
+        }
+        for kind, key in [("dead-stock", "dead_stock_items"), ("slow-moving", "slow_moving_items")]:
+            result[key] = (await self.alerts(kind, {"store_id": store_id}, page_size=1))["total"]
+        result["recent_adjustments"] = await self.listing(
+            "adjustments", {"store_id": store_id}, page_size=5
+        )
+        result["top_consumed_items"] = await self.consumption(
+            {"store_id": store_id, "days": 30}, page_size=10
+        )
+        for model, key in [
+            (m.InventoryCategory, "inventory_value_by_category"),
+            (m.InventoryStore, "inventory_value_by_store"),
+        ]:
+            query = (
+                select(
+                    model.name,
+                    item.default_currency.label("currency"),
+                    func.sum(b.inventory_value).label("inventory_value"),
+                )
+                .select_from(b)
+                .join(item, b.item_id == item.id)
+            )
+            query = query.join(
+                model,
+                item.category_id == model.id
+                if model is m.InventoryCategory
+                else b.store_id == model.id,
+            ).where(b.organization_id == self.org)
+            if store_id:
+                query = query.where(b.store_id == store_id)
+            result[key] = [
+                dict(r)
+                for r in (
+                    await self.session.execute(
+                        query.group_by(model.name, item.default_currency)
+                        .order_by(model.name)
+                        .limit(100)
+                    )
+                ).mappings()
+            ]
+        values = (
+            select(
+                item.default_currency.label("currency"),
+                func.sum(b.inventory_value).label("inventory_value"),
+            )
+            .select_from(b)
+            .join(item, b.item_id == item.id)
+            .where(b.organization_id == self.org)
+        )
+        if store_id:
+            values = values.where(b.store_id == store_id)
+        result["inventory_value_by_currency"] = [
+            dict(r)
+            for r in (await self.session.execute(values.group_by(item.default_currency))).mappings()
+        ]
+        result["pending_approvals"] = result.get("pending_requests", 0)
+        t = m.InventoryTransaction
+        original = aliased(m.InventoryTransaction)
+        sign = case(
+            (t.transaction_type == "ISSUE", 1),
+            (t.transaction_type == "RETURN_FROM_EMPLOYEE", -1),
+            (and_(t.transaction_type == "REVERSAL", original.transaction_type == "ISSUE"), -1),
+            else_=0,
+        )
+        for group, model, key in [
+            (t.project_id, Project, "consumption_by_project"),
+            (item.category_id, m.InventoryCategory, "consumption_by_category"),
+        ]:
+            query = (
+                select(
+                    model.name,
+                    t.currency,
+                    func.sum(t.total_cost * sign).label("total_consumption_cost"),
+                )
+                .select_from(t)
+                .outerjoin(original, t.reversal_of_id == original.id)
+                .join(item, t.item_id == item.id)
+                .join(model, group == model.id)
+                .where(
+                    t.organization_id == self.org,
+                    t.transaction_date >= datetime.now(UTC) - timedelta(days=30),
+                    sign != 0,
+                )
+            )
+            if store_id:
+                query = query.where(or_(t.from_store_id == store_id, t.to_store_id == store_id))
+            result[key] = [
+                dict(r)
+                for r in (
+                    await self.session.execute(
+                        query.group_by(model.name, t.currency).order_by(model.name).limit(100)
+                    )
+                ).mappings()
+            ]
+        return result

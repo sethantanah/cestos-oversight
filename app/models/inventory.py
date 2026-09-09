@@ -1,9 +1,9 @@
 """Inventory master data, operational documents and immutable stock ledger."""
 
 import uuid
-from typing import Any
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -511,7 +511,9 @@ class InventoryBalance(UUIDMixin, OrganizationMixin, TimestampMixin, BalanceFiel
             postgresql_nulls_not_distinct=True,
         ),
         CheckConstraint(
-            "quantity_on_hand >= 0 AND quantity_reserved >= 0 AND quantity_quarantined >= 0 AND quantity_in_transit >= 0 AND quantity_on_hand >= quantity_reserved + quantity_quarantined",
+            "quantity_on_hand >= 0 AND quantity_reserved >= 0 AND "
+            "quantity_quarantined >= 0 AND quantity_in_transit >= 0 AND "
+            "quantity_on_hand >= quantity_reserved + quantity_quarantined",
             name="balance_nonnegative",
         ),
     )

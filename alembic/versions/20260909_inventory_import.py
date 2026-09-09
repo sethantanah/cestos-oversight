@@ -23,7 +23,7 @@ def upgrade() -> None:
     op.create_check_constraint('transaction_posted','inventory_transactions',"status = 'POSTED'")
 
 def downgrade() -> None:
-    op.drop_constraint('ck_inventory_transactions_transaction_posted','inventory_transactions',type_='check')
-    op.drop_constraint('ck_inventory_items_item_criticality','inventory_items',type_='check')
-    op.drop_constraint('ck_inventory_items_item_tracking_method','inventory_items',type_='check')
+    op.drop_constraint(op.f('ck_inventory_transactions_transaction_posted'),'inventory_transactions',type_='check')
+    op.drop_constraint(op.f('ck_inventory_items_item_criticality'),'inventory_items',type_='check')
+    op.drop_constraint(op.f('ck_inventory_items_item_tracking_method'),'inventory_items',type_='check')
     op.drop_table('inventory_imports')

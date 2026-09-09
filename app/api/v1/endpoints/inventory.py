@@ -349,7 +349,7 @@ ACTIONS = {
     "transfers": ["approve", "dispatch", "receive", "cancel"],
     "requests": ["submit", "approve", "reject", "cancel"],
     "adjustments": ["approve", "post", "cancel"],
-    "stock-counts": ["start", "submit", "approve", "post"],
+    "stock-counts": ["start", "restart", "submit", "approve", "post"],
 }
 
 
@@ -403,7 +403,7 @@ def document_routes(kind: str) -> None:
         def register_action(action: str) -> None:
             grant = (
                 "create"
-                if action in {"cancel", "start", "submit"}
+                if action in {"cancel", "start", "restart", "submit"}
                 else "approve"
                 if action == "reject"
                 else action
