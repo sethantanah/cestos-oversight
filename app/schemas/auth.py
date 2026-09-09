@@ -19,3 +19,9 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_in: int
+
+
+class AccessResponse(BaseModel):
+    roles: list[str]
+    permissions: list[str]
+    is_superuser: bool

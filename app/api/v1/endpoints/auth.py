@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.dependencies import get_current_active_user, request_settings
+from app.core.dependencies import get_current_active_user, request_settings, scoped_roles
 from app.db.session import get_session
 from app.models import User
-from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse
+from app.schemas.auth import AccessResponse, LoginRequest, RefreshRequest, TokenResponse
 from app.schemas.user import UserRead
 from app.services.auth import AuthService
 
@@ -45,3 +45,13 @@ async def logout(body: RefreshRequest, service: AuthService = Depends(auth_servi
 @router.get("/me", response_model=UserRead)
 async def me(user: User = Depends(get_current_active_user)) -> UserRead:
     return UserRead.model_validate(user)
+
+
+@router.get("/access", response_model=AccessResponse)
+async def access(user: User = Depends(get_current_active_user)) -> AccessResponse:
+    roles = scoped_roles(user)
+    return AccessResponse(
+        roles=sorted({role.name for role in roles}),
+        permissions=sorted({p.code for role in roles for p in role.permissions}),
+        is_superuser=user.is_superuser,
+    )

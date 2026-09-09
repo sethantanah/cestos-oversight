@@ -487,6 +487,17 @@ class InventoryService:
                     f"{related.first_name} {related.last_name}"
                     if key == "employee_id" else related.name
                 )
+        for field, model, name in (
+            ("item_id", m.InventoryItem, "item_name"),
+            ("unit_id", m.UnitOfMeasure, "unit_name"),
+        ):
+            ids = {line[field] for line in result["items"]}
+            related = (await self.session.scalars(select(model).where(
+                model.organization_id == self.org, model.id.in_(ids)
+            ))).all()
+            labels = {str(record.id): record.name for record in related}
+            for line in result["items"]:
+                line[name] = labels.get(str(line[field]))
         return result
 
     async def document_save(self, kind: str, body: Any, identifier: uuid.UUID | None = None) -> Any:

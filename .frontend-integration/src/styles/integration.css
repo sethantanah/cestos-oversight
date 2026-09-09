@@ -1,0 +1,4 @@
+body {font-family: "DM Sans", "Segoe UI", sans-serif;}
+button:disabled {opacity:.5;cursor:not-allowed;}
+:focus-visible {outline:2px solid #1B4F8A;outline-offset:3px;}
+@media(max-width:640px){aside.w-60{width:12rem;} .kpi-value{font-size:1.75rem;}}

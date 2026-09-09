@@ -1,0 +1,1 @@
+import AppLayout from '@/components/AppLayout';import ResourceWorkspace from '@/components/ResourceWorkspace';export default async function Page({params}:{params:Promise<{resource:string[]}>}){const {resource}=await params;return <AppLayout><ResourceWorkspace key={resource.join('/')} resource={resource.join('/')}/></AppLayout>;}
