@@ -24,6 +24,8 @@ const Inventory = (() => {
     const toolbar=el('div',undefined,'row-actions');area.append(toolbar);
     const query=el('input');query.type='search';query.placeholder='Search '+names[kind].toLowerCase();query.value=search;query.setAttribute('aria-label','Search inventory');
     toolbar.append(query,btn('Search',()=>{search=query.value;return open(kind)}));
+    if(['items','stock','transactions','receipts','issues','returns','transfers','requests','stock-counts','adjustments'].includes(kind))toolbar.append(btn('Export CSV',async()=>{const result=await apiBlob(root+'/exports/'+kind);downloadBlob(result.blob,result.filename)}));
+    if(kind==='items'&&can('inventory.admin'))toolbar.append(btn('Import CSV',importForm));
     if(masters[kind]&&can(kind==='items'?'inventory.items.create':'inventory.catalog.manage'))toolbar.append(btn('Add '+names[kind].toLowerCase(),()=>masterForm(kind),true));
     if(documentKinds.includes(kind)&&can(grant(kind)+'.create'))toolbar.append(btn('New '+names[kind].toLowerCase(),()=>documentForm(kind),true));
     if(kind==='reservations'&&can('inventory.reservations.manage'))toolbar.append(btn('Reserve stock',()=>masterForm('reservations'),true));
@@ -58,15 +60,15 @@ const Inventory = (() => {
   async function record(kind,row){openDialogTitle('INVENTORY',row.name||row.transaction_number||names[kind]);const area=$('detail-body');facts(row,area);if(masters[kind]&&can('inventory.catalog.manage'))area.append(btn('Edit',()=>masterForm(kind,row)));if(kind==='reservations'&&row.status==='ACTIVE'&&can('inventory.reservations.manage'))area.append(btn('Release reservation',async()=>{await api(root+`/reservations/${row.id}/release`,{method:'POST'});$('detail-dialog').close();await open(kind)}));if(kind==='transactions'&&can('inventory.transactions.reverse'))area.append(btn('Reverse transaction',()=>Workforce.form('Reverse transaction','InventoryReverse',root+`/transactions/${row.id}/reverse`,{contextId:null,done:()=>open('transactions')})));}
   async function documentDetail(kind,id){
     const doc=await api(root+`/${kind}/${id}`);openDialogTitle(names[kind].toUpperCase(),doc.document_number);const area=$('detail-body');facts(doc,area);
-    const actions=el('div',undefined,'row-actions');area.append(actions);
+    const actions=el('div',undefined,'row-actions');area.append(actions);const countInputs={};
     if(doc.status==='DRAFT'&&can(grant(kind)+'.create'))actions.append(btn('Edit draft',()=>documentForm(kind,doc)));
     for(const op of transitions[kind][doc.status]||[]){const required=op==='create-issue'?'inventory.issues.create':grant(kind)+'.'+(['submit','start','cancel'].includes(op)?'create':op==='reject'?'approve':op);if(!can(required))continue;
       actions.append(btn(pretty(op),async()=>{
         if(op==='create-issue')return Workforce.form('Create issue from request','InventoryAction',root+`/requests/${id}/create-issue`,{contextId:null,fields:{store_id:{type:'string',format:'uuid'}},lookupTargets:lookups,done:doc=>documentDetail('issues',doc.id)});
-        await api(root+`/${kind}/${id}/${op}`,{method:'POST',body:{}});await documentDetail(kind,id);
+        await api(root+`/${kind}/${id}/${op}`,{method:'POST',body:kind==='stock-counts'&&op==='submit'?{quantities:Object.fromEntries(Object.entries(countInputs).map(([key,field])=>[key,field.value]))}:{}});await documentDetail(kind,id);
       },['post','dispatch','receive'].includes(op)));
     }
-    for(const row of doc.items){const card=el('article',undefined,'employee-record');const details=await api(root+'/items/'+row.item_id);card.append(el('h3',details.name));facts(row,card);area.append(card);}
+    for(const row of doc.items){const card=el('article',undefined,'employee-record');const details=await api(root+'/items/'+row.item_id);card.append(el('h3',details.name));facts(row,card);if(kind==='stock-counts'&&doc.status==='IN_PROGRESS')countInputs[row.id]=input(card,'Counted quantity','number',row.counted_quantity??'',true);area.append(card);}
   }
   async function choose(parent,title,path,value=null,required=false){
     const wrapper=el('div'),caption=el('label',title),select=el('select');select.setAttribute('aria-label',title);select.required=required;wrapper.append(caption,select);parent.append(wrapper);
@@ -107,6 +109,18 @@ const Inventory = (() => {
       payload.items=controls.map(({row})=>{const data={};for(const[key,field]of Object.entries(row))if(field.value)data[kind==='transfers'&&key==='bin_id'?'from_bin_id':key]=field.value;return data;});
       const saved=await api(root+'/'+kind+(doc?'/'+doc.id:''),{method:doc?'PATCH':'POST',body:payload});dialog.close();await documentDetail(kind,saved.id);
     },error.id)};
+  }
+  async function importForm(){
+    openDialogTitle('INVENTORY IMPORT','Preview a CSV file');const area=$('detail-body');
+    area.append(el('p','Choose item master, opening stock, or stock policies. Preview validates every row. Stock is added only after you confirm. Files may contain up to 200 rows.','hint'));
+    const kind=el('select');kind.setAttribute('aria-label','Import type');for(const value of ['items','opening-stock','stock-policies'])kind.append(new Option(pretty(value),value));
+    const file=el('input');file.type='file';file.accept='.csv';file.setAttribute('aria-label','CSV file');area.append(kind,file,btn('Validate and preview',async()=>{
+      if(!file.files[0])throw Error('Choose a CSV file');const data=new FormData();data.append('file',file.files[0]);const result=await sendForm(root+'/imports/'+kind.value+'/preview',data);
+      const preview=el('section');preview.append(el('h3',result.row_count+' rows'));area.append(preview);
+      for(const error of result.errors)preview.append(el('p',`Row ${error.row}: ${error.message}`,'form-error'));
+      const table=el('pre');table.textContent=JSON.stringify(result.rows,null,2);preview.append(table);
+      if(result.can_import)preview.append(btn('Confirm import',async()=>{await api(root+'/imports/'+result.id+'/confirm',{method:'POST'});$('detail-dialog').close();await open('items')},true));
+    }));
   }
   return {open,item,documentForm};
 })();

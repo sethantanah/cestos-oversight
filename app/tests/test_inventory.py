@@ -1,6 +1,7 @@
 """Inventory ledger acceptance, concurrency and traceability regressions."""
 
 import asyncio
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -232,3 +233,287 @@ async def test_inventory_concurrent_issue_and_weighted_average(client, identitie
     )
     assert sorted(r.status_code for r in responses) == [200, 409]
     assert (await client.get("/api/v1/inventory/reconciliation", headers=h)).json()["consistent"]
+
+
+async def test_inventory_permissions_isolation_and_cost_redaction(
+    client, identities, session_factory
+):
+    from app.models import User, Role, Permission
+    from app.tests.conftest import login
+
+    h, u, c, item, stores = await setup(client, identities, session_factory)
+    async with session_factory() as session:
+        user = await session.get(User, identities["denied"].id)
+        read = Permission(code="inventory.read")
+        session.add(read)
+        user.roles = [
+            Role(name="Stock reader", organization_id=user.organization_id, permissions=[read])
+        ]
+        await session.commit()
+    own = {"Authorization": "Bearer " + (await login(client, identities["denied"]))["access_token"]}
+    assert (
+        await client.post(
+            "/api/v1/inventory/items",
+            headers=own,
+            json={"name": "Denied", "category_id": c["id"], "base_unit_id": u["id"]},
+        )
+    ).status_code == 403
+    doc = await create(
+        client,
+        h,
+        "inventory/receipts",
+        {"store_id": stores[0]["id"], "items": [line(item, u, 10, unit_cost="9876")]},
+    )
+    await act(client, h, "receipts", doc, "post")
+    for url in [
+        "inventory/items",
+        "inventory/transactions",
+        "inventory/stock",
+        "inventory/dashboard-summary",
+        f"inventory/items/{item['id']}/overview",
+        "inventory/exports/stock",
+    ]:
+        response = await client.get("/api/v1/" + url, headers=own)
+        assert response.status_code == 200, response.text
+        assert (
+            "9876" not in response.text
+            and "unit_cost" not in response.text
+            and "inventory_value" not in response.text
+        )
+    other = await superuser_headers(client, identities["other"], session_factory)
+    assert (
+        await client.get("/api/v1/inventory/items/" + item["id"], headers=other)
+    ).status_code == 404
+    invalid = await client.post(
+        "/api/v1/inventory/items",
+        headers=other,
+        json={"name": "Cross org", "category_id": c["id"], "base_unit_id": u["id"]},
+    )
+    assert invalid.status_code == 404
+
+
+async def test_inventory_conversion_approvals_requests_and_reversal(
+    client, identities, session_factory
+):
+    h, u, c, item, stores = await setup(client, identities, session_factory)
+    store = stores[0]
+    drum = await create(
+        client, h, "inventory/units", {"name": "Drum", "symbol": "drum", "precision": 0}
+    )
+    await create(
+        client,
+        h,
+        "inventory/conversions",
+        {
+            "item_id": item["id"],
+            "from_unit_id": drum["id"],
+            "to_unit_id": u["id"],
+            "conversion_factor": "200",
+        },
+    )
+    doc = await create(
+        client,
+        h,
+        "inventory/receipts",
+        {"store_id": store["id"], "items": [line(item, drum, 2, unit_cost="1000")]},
+    )
+    await act(client, h, "receipts", doc, "post")
+    assert (await balance(client, h, item, store))["quantity_on_hand"] == 400
+    req = await create(client, h, "inventory/requests", {"items": [line(item, u, 20)]})
+    await act(client, h, "requests", req, "submit")
+    await act(client, h, "requests", req, "approve")
+    issued = await act(client, h, "requests", req, "create-issue", {"store_id": store["id"]})
+    assert (await act(client, h, "requests", req, "create-issue", {"store_id": store["id"]}))[
+        "id"
+    ] == issued["id"]
+    await act(client, h, "issues", issued, "post")
+    assert (await client.get("/api/v1/inventory/requests/" + req["id"], headers=h)).json()[
+        "status"
+    ] == "FULFILLED"
+    plain = await create(
+        client, h, "inventory/issues", {"store_id": store["id"], "items": [line(item, u, 10)]}
+    )
+    await act(client, h, "issues", plain, "post")
+    tx = (
+        await client.get(
+            "/api/v1/inventory/transactions", headers=h, params={"transaction_type": "ISSUE"}
+        )
+    ).json()["items"][0]
+    await create(
+        client,
+        h,
+        "inventory/transactions/" + tx["id"] + "/reverse",
+        {"reason": "Wrong quantity entered"},
+    )
+    await create(client, h, "inventory/transactions/" + tx["id"] + "/reverse", {"reason": "Retry"})
+    assert (await balance(client, h, item, store))["quantity_on_hand"] == 380
+    assert (await client.get("/api/v1/inventory/reconciliation", headers=h)).json()["consistent"]
+    draft = await create(
+        client,
+        h,
+        "inventory/adjustments",
+        {
+            "store_id": store["id"],
+            "purpose": "NEGATIVE_ADJUSTMENT",
+            "reason": "Loss confirmed",
+            "items": [line(item, u, 3)],
+        },
+    )
+    assert (
+        await client.post(f"/api/v1/inventory/adjustments/{draft['id']}/post", headers=h, json={})
+    ).status_code == 409
+    await act(client, h, "adjustments", draft, "approve")
+    await act(client, h, "adjustments", draft, "post")
+    assert (await balance(client, h, item, store))["quantity_on_hand"] == 377
+
+
+async def test_inventory_batch_serial_quarantine_and_custody(client, identities, session_factory):
+    h, u, c, item, stores = await setup(client, identities, session_factory)
+    store = stores[0]
+    tool = await create(
+        client,
+        h,
+        "inventory/items",
+        {
+            "name": "Calibrated tool",
+            "category_id": c["id"],
+            "base_unit_id": u["id"],
+            "tracking_method": "SERIALIZED",
+            "requires_batch_tracking": True,
+            "requires_expiry_tracking": True,
+            "is_returnable": True,
+        },
+    )
+    expiry = (datetime.now(UTC) + timedelta(days=100)).date().isoformat()
+    receipt = await create(
+        client,
+        h,
+        "inventory/receipts",
+        {
+            "store_id": store["id"],
+            "items": [
+                line(
+                    tool,
+                    u,
+                    1,
+                    unit_cost="500",
+                    serial_number="TOOL-1",
+                    lot_number="B1",
+                    expiry_date=expiry,
+                )
+            ],
+        },
+    )
+    posted = await act(client, h, "receipts", receipt, "post")
+    detail = posted["items"][0]
+    serial, lot = detail["serial_id"], detail["lot_id"]
+    reservation = await create(
+        client,
+        h,
+        "inventory/reservations",
+        {
+            "item_id": tool["id"],
+            "store_id": store["id"],
+            "quantity": "1",
+            "serial_id": serial,
+            "lot_id": lot,
+        },
+    )
+    issue = await create(
+        client,
+        h,
+        "inventory/issues",
+        {
+            "store_id": store["id"],
+            "reservation_id": reservation["id"],
+            "items": [line(tool, u, 1, serial_id=serial, lot_id=lot)],
+        },
+    )
+    await act(client, h, "issues", issue, "post")
+    duplicate = await create(
+        client,
+        h,
+        "inventory/issues",
+        {"store_id": store["id"], "items": [line(tool, u, 1, serial_id=serial, lot_id=lot)]},
+    )
+    assert (
+        await client.post(f"/api/v1/inventory/issues/{duplicate['id']}/post", headers=h, json={})
+    ).status_code == 409
+    returned = await create(
+        client,
+        h,
+        "inventory/returns",
+        {
+            "store_id": store["id"],
+            "original_issue_id": issue["id"],
+            "condition": "DAMAGED",
+            "items": [line(tool, u, 1, serial_id=serial, lot_id=lot)],
+        },
+    )
+    await act(client, h, "returns", returned, "post")
+    assert (await balance(client, h, tool, store))["quantity_available"] == 0
+    custody = (await client.get("/api/v1/inventory/custody", headers=h)).json()["items"]
+    assert custody[0]["status"] == "RETURNED"
+    async with session_factory() as session:
+        batch = await session.get(m.InventoryLot, uuid.UUID(lot))
+        batch.expiry_date = datetime.now(UTC).date() - timedelta(days=1)
+        await session.commit()
+    release = await create(
+        client,
+        h,
+        "inventory/adjustments",
+        {
+            "store_id": store["id"],
+            "purpose": "RELEASE_FROM_QUARANTINE",
+            "reason": "Checked tool",
+            "items": [line(tool, u, 1, serial_id=serial, lot_id=lot)],
+        },
+    )
+    await act(client, h, "adjustments", release, "approve")
+    assert (
+        await client.post(f"/api/v1/inventory/adjustments/{release['id']}/post", headers=h, json={})
+    ).status_code == 409
+
+
+async def test_inventory_csv_preview_atomicity_and_reports(client, identities, session_factory):
+    h, u, c, item, stores = await setup(client, identities, session_factory)
+    store = stores[0]
+    csv = (
+        f"store_id,item_id,unit_id,quantity,unit_cost\n{store['id']},{item['id']},{u['id']},50,2\n"
+    )
+    preview = await client.post(
+        "/api/v1/inventory/imports/opening-stock/preview",
+        headers=h,
+        files={"file": ("stock.csv", csv, "text/csv")},
+    )
+    assert preview.status_code == 201, preview.text
+    data = preview.json()
+    assert data["can_import"], data
+    assert (await balance(client, h, item, store))["quantity_on_hand"] == 0
+    await create(client, h, "inventory/imports/" + data["id"] + "/confirm", {})
+    await create(client, h, "inventory/imports/" + data["id"] + "/confirm", {})
+    assert (await balance(client, h, item, store))["quantity_on_hand"] == 50
+    invalid = csv + f"{store['id']},{item['id']},{u['id']},-1,2\n"
+    preview = await client.post(
+        "/api/v1/inventory/imports/opening-stock/preview",
+        headers=h,
+        files={"file": ("bad.csv", invalid, "text/csv")},
+    )
+    assert not preview.json()["can_import"], preview.text
+    assert (await balance(client, h, item, store))["quantity_on_hand"] == 50
+    for report in [
+        "low-stock",
+        "out-of-stock",
+        "critical-stock",
+        "dead-stock",
+        "slow-moving",
+        "expiring",
+        "aging",
+        "reorder-recommendations",
+        "consumption",
+        "issue-suggestions",
+    ]:
+        response = await client.get("/api/v1/inventory/" + report, headers=h)
+        assert response.status_code == 200, response.text
+    response = await client.get("/api/v1/inventory/exports/stock", headers=h)
+    assert response.status_code == 200 and "quantity_on_hand" in response.text

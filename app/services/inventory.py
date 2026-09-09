@@ -225,6 +225,20 @@ class InventoryService:
                     raise ValidationError("Category hierarchy cannot contain a cycle")
                 seen.add(parent)
                 parent = (await self.ref(model, parent)).parent_category_id
+        if kind == "bins" and identifier and data.get("store_id", row.store_id) != row.store_id:
+            if await self.session.scalar(
+                select(m.InventoryBalance.id)
+                .where(m.InventoryBalance.bin_id == identifier)
+                .limit(1)
+            ):
+                raise ConflictError("A used bin cannot be moved to another store")
+        if kind == "units" and identifier and data.get("precision", row.precision) != row.precision:
+            if await self.session.scalar(
+                select(m.InventoryTransaction.id)
+                .where(m.InventoryTransaction.unit_id == identifier)
+                .limit(1)
+            ):
+                raise ConflictError("Unit precision cannot change after posting stock")
         if kind == "items" and identifier:
             changed = any(
                 key in data and data[key] != getattr(row, key)
@@ -499,7 +513,16 @@ class InventoryService:
         await self.session.flush()
         if identifier:
             await self.session.execute(delete(line_model).where(line_model.document_id == row.id))
+        seen_lines = set()
         for incoming in body.items:
+            key = (
+                incoming.item_id
+                if kind == "requests"
+                else (incoming.item_id, incoming.bin_id, incoming.lot_id, incoming.serial_id)
+            )
+            if kind in {"requests", "stock-counts"} and key in seen_lines:
+                raise ValidationError("Duplicate request item or count bucket")
+            seen_lines.add(key)
             line_data = incoming.model_dump()
             await self.validate_refs({**data, **line_data})
             item = await self.ref(m.InventoryItem, incoming.item_id)
@@ -745,6 +768,8 @@ class InventoryService:
         if not item.is_active:
             raise ConflictError("Item is archived")
         q = line.normalized_quantity
+        if await self.quantity(item, line.unit_id, line.quantity) != q:
+            raise ConflictError("Unit conversion changed; revise the draft before posting")
         source = doc.from_store_id if kind == "transfers" else doc.store_id
         bin_id = line.from_bin_id if kind == "transfers" else line.bin_id
         await self.validate_refs(
@@ -798,8 +823,9 @@ class InventoryService:
                         reservation.store_id,
                         reservation.bin_id,
                         reservation.lot_id,
+                        reservation.serial_id,
                     )
-                    != (item.id, source, bin_id, line.lot_id)
+                    != (item.id, source, bin_id, line.lot_id, line.serial_id)
                     or reservation.quantity - reservation.fulfilled_quantity < q
                 ):
                     raise ConflictError("Reservation does not cover this issue")
@@ -817,6 +843,9 @@ class InventoryService:
                 request = await self.ref(m.InventoryRequest, doc.request_id, True)
                 if request.status not in {"APPROVED", "PARTIALLY_ISSUED"}:
                     raise ConflictError("Request is not approved")
+                for field in ("project_id", "asset_id", "employee_id"):
+                    if getattr(request, field) != getattr(doc, field):
+                        raise ValidationError("Issue recipient must match the approved request")
                 reqline = await self.session.scalar(
                     select(m.InventoryRequestItem)
                     .where(
@@ -979,6 +1008,16 @@ class InventoryService:
                 raise ValidationError("Use dispatch and receive for transfers")
         elif kind in {"adjustments", "stock-counts"}:
             purpose = doc.purpose
+            if serial and (
+                serial.current_store_id != source
+                or serial.current_bin_id != bin_id
+                or serial.status not in {"IN_STOCK", "QUARANTINED"}
+            ):
+                raise ConflictError("Serial is not held in this stock bucket")
+            if serial and purpose == "RELEASE_FROM_QUARANTINE" and serial.status != "QUARANTINED":
+                raise ConflictError("Selected serial is not quarantined")
+            if serial and purpose == "QUARANTINE" and serial.status != "IN_STOCK":
+                raise ConflictError("Selected serial is not available for quarantine")
             if not doc.reason and kind == "adjustments":
                 raise ValidationError("Adjustment reason is required")
             if kind == "stock-counts":
