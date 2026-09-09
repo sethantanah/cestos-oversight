@@ -16,6 +16,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.core.database import build_engine, wait_for_database
+from app.core.event_loop import loop_factory
 
 # Configure logging
 logging.basicConfig(
@@ -188,7 +189,7 @@ async def migrate() -> int:
 
 if __name__ == "__main__":
     try:
-        exit_code = asyncio.run(migrate())
+        exit_code = asyncio.run(migrate(), loop_factory=loop_factory)
         sys.exit(exit_code)
     except KeyboardInterrupt:
         logger.info("Migration interrupted by user")

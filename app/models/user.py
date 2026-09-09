@@ -22,6 +22,7 @@ class User(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Base):
     is_superuser: Mapped[bool] = mapped_column(default=False, server_default="false")
     token_version: Mapped[int] = mapped_column(default=0, server_default="0")
     setup_required: Mapped[bool] = mapped_column(default=False, server_default="false")
+    supabase_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     roles: Mapped[list[Role]] = relationship(secondary="user_roles", lazy="raise")
 

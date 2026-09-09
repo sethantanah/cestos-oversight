@@ -163,7 +163,7 @@ class SupabaseStorage:
 
 
 def build_storage(settings: Settings):
-    if settings.app_env == "production" and settings.storage_provider == "supabase":
+    if settings.app_env == "production":
         if not settings.supabase_url or not settings.supabase_service_role_key:
             raise ValueError("Supabase storage requires a configured SUPABASE_URL and service role key")
         return SupabaseStorage(

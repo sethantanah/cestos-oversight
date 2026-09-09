@@ -5,6 +5,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import Settings
 from app.core.exceptions import NotFoundError
 from app.core.security import hash_password
 from app.models import User
@@ -12,12 +13,14 @@ from app.repositories.user import UserRepository
 from app.schemas.common import Page
 from app.schemas.user import UserCreate, UserRead
 from app.services.audit import record_audit, request_metadata
+from app.services.supabase_auth import SupabaseAuthSyncService
 
 
 class UserService:
-    def __init__(self, session: AsyncSession, actor: User):
+    def __init__(self, session: AsyncSession, actor: User, settings: Settings | None = None):
         self.session = session
         self.actor = actor
+        self.settings = settings
         self.repository = UserRepository(session, actor.organization_id)
 
     async def list(self, page: int, page_size: int) -> Page[UserRead]:
@@ -50,6 +53,15 @@ class UserService:
             )
             self.session.add(user)
             await self.session.flush()
+
+            settings = self.settings or request.app.state.settings
+            supabase_user_id = SupabaseAuthSyncService(settings).sync_user(
+                user,
+                password=body.password.get_secret_value(),
+            )
+            if supabase_user_id:
+                user.supabase_user_id = supabase_user_id
+
             result = UserRead.model_validate(user)
             record_audit(
                 self.session,

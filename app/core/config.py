@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     storage_provider: Literal["local", "supabase"] = "local"
     supabase_url: str | None = None
     supabase_service_role_key: SecretStr | None = None
+    supabase_anon_key: str | None = None
     supabase_bucket: str = "cestos-storage"
+    supabase_auth_enabled: bool = False
 
     @field_validator("database_url")
     @classmethod
@@ -56,15 +58,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_settings(self) -> "Settings":
-        if self.app_env == "production" and self.storage_provider == "local" and self.supabase_url:
-            self.storage_provider = "supabase"
         if self.app_env == "production" and (self.debug or "*" in self.cors_origins):
             raise ValueError("Production must disable DEBUG and wildcard CORS")
-        if self.app_env == "production" and self.storage_provider == "supabase":
+        if self.app_env == "production" and self.storage_provider != "supabase":
+            raise ValueError("Production storage must use Supabase; local storage is not allowed")
+        if self.app_env == "production":
             if not self.supabase_url or not self.supabase_service_role_key:
                 raise ValueError(
                     "Production Supabase storage requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
                 )
+        if self.supabase_auth_enabled and (not self.supabase_url or not self.supabase_service_role_key):
+            raise ValueError(
+                "Supabase auth sync requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
+            )
         if self.app_env == "production" and self.smtp_host:
             if not (self.smtp_starttls or self.smtp_use_ssl) or not self.public_base_url.startswith(
                 "https://"

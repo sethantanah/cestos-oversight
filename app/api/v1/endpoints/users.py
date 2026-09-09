@@ -39,4 +39,4 @@ async def create_user(
     actor: User = Depends(require_permission("users.create")),
     session: AsyncSession = Depends(get_session),
 ) -> UserRead:
-    return await UserService(session, actor).create(body, request)
+    return await UserService(session, actor, request.app.state.settings).create(body, request)
