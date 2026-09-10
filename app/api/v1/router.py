@@ -62,3 +62,6 @@ router.include_router(hr.router)
 from app.api.v1.endpoints import inventory
 router.include_router(inventory.router)
 router.include_router(inventory.operational_router)
+
+from app.api.v1.endpoints import operational_logs
+router.include_router(operational_logs.router)

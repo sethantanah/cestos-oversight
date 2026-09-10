@@ -13,7 +13,7 @@ const pagers = {
   clients: { page: 1, pages: 0 },
   locations: { page: 1, pages: 0 },
 };
-const VIEWS = ["inventory", "my-profile", "notifications", "hr-settings", "employee-details", "home", "employees", "projects", "assets", "clients", "locations", "users"];
+const VIEWS = ["inventory", "availability", "my-profile", "notifications", "hr-settings", "employee-details", "home", "employees", "projects", "assets", "clients", "locations", "users"];
 let busy = false;
 let refreshing = null;
 const nameCache = { employees: null, projects: null, assets: null, locations: null, clients: null };
@@ -225,6 +225,53 @@ async function loadSummary() {
       $(id).textContent = `${result.total} TOTAL`;
     } catch { $(id).textContent = "—"; }
   }
+}
+/* ---------- workforce availability ---------- */
+const availabilityState = { month: new Date(new Date().getFullYear(), new Date().getMonth(), 1) };
+function availabilityIso(date) { return date.toISOString().slice(0, 10); }
+function availabilityIncludes(date, start, end) { return start && end && date >= start && date <= end; }
+async function loadAvailability() {
+  const month = availabilityState.month;
+  const year = month.getFullYear(); const monthIndex = month.getMonth();
+  $("availability-month").textContent = month.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const content = $("availability-content"); content.replaceChildren(el("p", "Loading availability…", "hint"));
+  try {
+    const result = await api("/api/v1/employees?page=1&page_size=100&is_active=true");
+    const employees = await Promise.all(result.items.map(async (item) => {
+      const [overview, rotations, leave] = await Promise.all([
+        api(`/api/v1/employees/${item.id}/overview`).catch(() => null),
+        api(`/api/v1/employees/${item.id}/rotations`).catch(() => []),
+        api(`/api/v1/employees/${item.id}/leave-requests`).catch(() => []),
+      ]);
+      return { item, overview, rotations, leave };
+    }));
+    const days = new Date(year, monthIndex + 1, 0).getDate();
+    const totals = { covered: 0, off: 0, leave: 0 };
+    const grid = el("div", undefined, "availability-grid");
+    grid.append(el("div", "Employee", "availability-name"));
+    for (let dayNumber = 1; dayNumber <= days; dayNumber++) {
+      const date = new Date(year, monthIndex, dayNumber);
+      grid.append(el("div", `${date.toLocaleDateString(undefined, { weekday: "short" })} ${dayNumber}`, `availability-day-head ${date.getDay() === 0 || date.getDay() === 6 ? "weekend" : ""}`));
+    }
+    for (const person of employees) {
+      const name = `${person.item.first_name} ${person.item.last_name}`;
+      const project = person.overview?.current_project_name || "No current project";
+      const nameCell = el("div", undefined, "availability-name"); nameCell.append(el("strong", name), el("small", project)); grid.append(nameCell);
+      for (let dayNumber = 1; dayNumber <= days; dayNumber++) {
+        const date = new Date(year, monthIndex, dayNumber); const key = availabilityIso(date); const cell = el("div", undefined, "availability-cell");
+        const leave = person.leave.find((entry) => entry.status !== "REJECTED" && availabilityIncludes(key, entry.start_date, entry.end_date));
+        const rotation = person.rotations.find((entry) => entry.status !== "CANCELLED" && availabilityIncludes(key, entry.work_start_date, entry.off_end_date));
+        const off = rotation && availabilityIncludes(key, rotation.off_start_date, rotation.off_end_date);
+        const weekend = date.getDay() === 0 || date.getDay() === 6;
+        const state = leave ? "leave" : off ? "off" : weekend && !rotation ? "weekend" : "covered";
+        cell.classList.add(state); cell.title = leave ? `${name}: ${leave.reason || "Leave"} (${leave.status})` : off ? `${name}: Off rotation` : weekend && !rotation ? `${name}: Weekend` : `${name}: Covered${project === "No current project" ? " · no project" : ` · ${project}`}`;
+        cell.append(el("span", state === "leave" ? "Leave" : state === "off" ? "Off" : state === "weekend" ? "Weekend" : "On")); grid.append(cell);
+        if (state !== "weekend") totals[state]++;
+      }
+    }
+    content.replaceChildren(grid);
+    $("availability-summary").replaceChildren(...[["covered", "Covered days"], ["off", "Off rotation days"], ["leave", "Leave days"]].map(([key, title]) => { const card = el("article"); card.append(el("strong", totals[key]), el("span", title)); return card; }));
+  } catch (error) { content.replaceChildren(el("p", `Availability unavailable: ${error.message}`, "form-error")); }
 }
 /* ---------- users (existing) ---------- */
 function emptyUsers(message) {
@@ -659,6 +706,7 @@ $("sign-out").addEventListener("click", () => action(async () => {
 }));
 const ROUTES = {
   "#inventory": ["inventory", () => Inventory.open()],
+  "#availability": ["availability", loadAvailability],
   "#my-profile": ["my-profile", () => HR.self()],
   "#notifications": ["notifications", () => HR.notifications()],
   "#hr-settings": ["hr-settings", () => HR.settings()],
@@ -686,6 +734,8 @@ $("choose-project").addEventListener("click", () => action(() => openProjectForm
 $("choose-location").addEventListener("click", () => action(() => openLocationForm()));
 $("choose-asset").addEventListener("click", () => action(() => openAssetForm()));
 $("add-employee").addEventListener("click", () => Workforce.createEmployee());
+$("availability-prev").addEventListener("click", () => action(() => { availabilityState.month = new Date(availabilityState.month.getFullYear(), availabilityState.month.getMonth() - 1, 1); return loadAvailability(); }));
+$("availability-next").addEventListener("click", () => action(() => { availabilityState.month = new Date(availabilityState.month.getFullYear(), availabilityState.month.getMonth() + 1, 1); return loadAvailability(); }));
 
 
 
@@ -1262,9 +1312,10 @@ window.Workforce = (() => {
     const cfg = setup[kind];
     const records = await api(`/api/v1/${kind}`);
     const area = $("workforce-form-content"); $("workforce-form-title").textContent = cfg.label;
-    area.replaceChildren(button(`Add ${cfg.label.toLowerCase()}`, () => guarded(() => form(`Add ${cfg.label.toLowerCase()}`, cfg.create, `/api/v1/${kind}`, { contextId: null, done: () => catalogue(kind) })), "primary"));
+    const lookupTargets = kind === "departments" ? { parent_department_id: "departments", manager_employee_id: "employees" } : {};
+    area.replaceChildren(button(`Add ${cfg.label.toLowerCase()}`, () => guarded(() => form(`Add ${cfg.label.toLowerCase()}`, cfg.create, `/api/v1/${kind}`, { contextId: null, lookupTargets, done: () => catalogue(kind) })), "primary"));
     const names = await namesFor(cfg.columns, records);
-    area.append(table(cfg.columns, records, (actions, row) => actions.append(button("Edit", () => guarded(() => form(`Edit ${cfg.label.toLowerCase()}`, cfg.update, `/api/v1/${kind}/${row.id}`, { record: row, contextId: null, done: () => catalogue(kind) })))), names));
+    area.append(table(cfg.columns, records, (actions, row) => actions.append(button("Edit", () => guarded(() => form(`Edit ${cfg.label.toLowerCase()}`, cfg.update, `/api/v1/${kind}/${row.id}`, { record: row, contextId: null, lookupTargets, done: () => catalogue(kind) })))), names));
     if (!$("workforce-form-dialog").open) $("workforce-form-dialog").showModal();
   }
   const filters = {};

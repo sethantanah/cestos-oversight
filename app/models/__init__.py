@@ -139,3 +139,5 @@ from app.models.hr import ContractAlertRule, Notification, PasswordSetup, Salary
 from app.models import asset_records  # noqa: F401
 
 from app.models import inventory  # noqa: F401
+
+from app.models import operational_logs as operational_logs
