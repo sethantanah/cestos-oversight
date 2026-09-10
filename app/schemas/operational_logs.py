@@ -97,14 +97,3 @@ class FuelReductionCreate(Input):
     remaining_litres: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=3)
     reduction_reason: str | None = Field(default=None, max_length=50)
     notes: str | None = Field(default=None, max_length=20000)
-
-
-class InspectionUpdate(Input):
-    inspection_type: str | None = Field(default=None, max_length=40)
-    inspection_date: datetime | None = None
-    meter_reading: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
-    condition_status: str | None = Field(default=None, max_length=30)
-    summary: str | None = Field(default=None, max_length=20000)
-    defects_found: bool | None = None
-    defect_notes: str | None = Field(default=None, max_length=20000)
-    follow_up_required: bool | None = None

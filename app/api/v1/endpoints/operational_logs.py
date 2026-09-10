@@ -24,11 +24,11 @@ from app.models.operational_logs import (
     FuelSupplier,
     ProjectRecord,
 )
+from app.schemas.equipment import InspectionUpdate
 from app.schemas.operational_logs import (
     FuelLogCreate,
     FuelLogUpdate,
     FuelReductionCreate,
-    InspectionUpdate,
     MaintenanceCreate,
     MaintenanceStatus,
     MaintenanceUpdate,
