@@ -46,10 +46,6 @@ async def test_asset_fuel_maintenance_metrics_and_retirement(client, identities,
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "COMPLETED"
-    # Asset is not yet retired; retire attempt while jobs open should fail
-    assert (
-        await client.post(root + "/retire", headers=h, json={"reason": "End of life"})
-    ).status_code == 409
     # Create a second job to test sequential transitions: OPEN → IN_PROGRESS → COMPLETED
     response2 = await client.post(
         root + "/maintenance", headers=h, json={"title": "Tyre rotation", "cost": "20.00"}
@@ -57,6 +53,10 @@ async def test_asset_fuel_maintenance_metrics_and_retirement(client, identities,
     assert response2.status_code == 201, response2.text
     job2 = response2.json()
     url2 = root + "/maintenance/" + job2["id"] + "/status"
+    # Retiring is refused while a maintenance job is still open
+    assert (
+        await client.post(root + "/retire", headers=h, json={"reason": "End of life"})
+    ).status_code == 409
     for status in ["IN_PROGRESS", "COMPLETED"]:
         r = await client.post(url2, headers=h, json={"status": status, "notes": "Checked"})
         assert r.status_code == 200, r.text
