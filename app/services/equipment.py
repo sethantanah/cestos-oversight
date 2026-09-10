@@ -1115,10 +1115,14 @@ class EquipmentService(ExistingAssetService):
         ).all()
         return [
             {
-                "id": row.id,
+                "id": str(row.id),
                 "action": row.action,
                 "occurred_at": row.created_at,
-                "entity_id": row.entity_id,
+                "entity_id": str(row.entity_id) if row.entity_id else None,
+                "entity_type": row.entity_type,
+                "actor_user_id": str(row.actor_user_id) if row.actor_user_id else None,
+                "old_values": row.old_values,
+                "new_values": row.new_values,
             }
             for row in rows
         ]

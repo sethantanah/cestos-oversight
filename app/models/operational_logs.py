@@ -70,3 +70,39 @@ class ProjectRecord(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Ba
     file_name: Mapped[str | None] = mapped_column(String(255))
     mime_type: Mapped[str | None] = mapped_column(String(150))
     size_bytes: Mapped[int | None]
+
+
+class FuelSupplier(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):
+    __tablename__ = "fuel_suppliers"
+    __table_args__ = (Index("ix_fuel_supplier_name", "organization_id", "name"),)
+    name: Mapped[str] = mapped_column(String(200))
+
+
+class AssetFuelReduction(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):
+    __tablename__ = "asset_fuel_reductions"
+    __table_args__ = (
+        CheckConstraint("litres_reduced > 0", name="fuel_reduction_positive"),
+        Index("ix_asset_fuel_reduction_time", "organization_id", "asset_id", "recorded_at"),
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id"))
+    fuel_log_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("asset_fuel_logs.id"))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    litres_reduced: Mapped[Decimal] = mapped_column(Numeric(18, 3))
+    remaining_litres: Mapped[Decimal | None] = mapped_column(Numeric(18, 3))
+    reduction_reason: Mapped[str | None] = mapped_column(String(50))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class AssetLogFile(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):
+    __tablename__ = "asset_log_files"
+    __table_args__ = (
+        Index("ix_asset_log_files_lookup", "organization_id", "asset_id", "log_type", "log_id"),
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id"))
+    log_type: Mapped[str] = mapped_column(String(30))  # MAINTENANCE, FUEL, INSPECTION, METER
+    log_id: Mapped[uuid.UUID]
+    title: Mapped[str] = mapped_column(String(200))
+    storage_path: Mapped[str] = mapped_column(Text)
+    file_name: Mapped[str] = mapped_column(String(255))
+    mime_type: Mapped[str | None] = mapped_column(String(150))
+    size_bytes: Mapped[int | None]

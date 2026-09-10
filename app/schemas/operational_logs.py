@@ -58,3 +58,53 @@ class ProjectNoteCreate(Input):
 
 class RetireAsset(Input):
     reason: str = Field(min_length=1, max_length=20000)
+
+
+class FuelLogUpdate(Input):
+    project_id: uuid.UUID | None = None
+    recorded_at: datetime | None = None
+    fuel_type: Literal["DIESEL", "PETROL", "OTHER"] | None = None
+    quantity_litres: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=3)
+    unit_cost: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=4)
+    currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    meter_reading: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    supplier: str | None = Field(default=None, max_length=200)
+    reference_number: str | None = Field(default=None, max_length=100)
+    notes: str | None = Field(default=None, max_length=20000)
+
+
+class MaintenanceUpdate(Input):
+    project_id: uuid.UUID | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=20000)
+    maintenance_type: (
+        Literal["PREVENTIVE", "CORRECTIVE", "INSPECTION", "SERVICE", "OTHER"] | None
+    ) = None
+    priority: Literal["LOW", "NORMAL", "HIGH", "CRITICAL"] | None = None
+    scheduled_date: date | None = None
+    meter_reading: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    provider: str | None = Field(default=None, max_length=200)
+    cost: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    status: Literal["OPEN", "IN_PROGRESS", "COMPLETED", "CANCELLED"] | None = None
+    completion_notes: str | None = Field(default=None, max_length=20000)
+
+
+class FuelReductionCreate(Input):
+    fuel_log_id: uuid.UUID | None = None
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    litres_reduced: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+    remaining_litres: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=3)
+    reduction_reason: str | None = Field(default=None, max_length=50)
+    notes: str | None = Field(default=None, max_length=20000)
+
+
+class InspectionUpdate(Input):
+    inspection_type: str | None = Field(default=None, max_length=40)
+    inspection_date: datetime | None = None
+    meter_reading: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    condition_status: str | None = Field(default=None, max_length=30)
+    summary: str | None = Field(default=None, max_length=20000)
+    defects_found: bool | None = None
+    defect_notes: str | None = Field(default=None, max_length=20000)
+    follow_up_required: bool | None = None

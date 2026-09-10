@@ -14,12 +14,24 @@ from starlette.concurrency import run_in_threadpool
 from app.core.dependencies import require_permission
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.session import get_session
-from app.models import Project, User
-from app.models.operational_logs import AssetFuelLog, AssetMaintenanceJob, ProjectRecord
+from app.models import AssetAssignment, Project, User
+from app.models.asset_records import AssetInspection
+from app.models.operational_logs import (
+    AssetFuelLog,
+    AssetFuelReduction,
+    AssetLogFile,
+    AssetMaintenanceJob,
+    FuelSupplier,
+    ProjectRecord,
+)
 from app.schemas.operational_logs import (
     FuelLogCreate,
+    FuelLogUpdate,
+    FuelReductionCreate,
+    InspectionUpdate,
     MaintenanceCreate,
     MaintenanceStatus,
+    MaintenanceUpdate,
     ProjectNoteCreate,
     RetireAsset,
 )
@@ -70,6 +82,45 @@ async def writable_asset(service: EquipmentService, asset_id: uuid.UUID) -> None
         raise ConflictError("This asset is retired or archived")
 
 
+async def ensure_supplier_saved(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    supplier_name: str | None,
+    actor_id: uuid.UUID,
+) -> None:
+    if not supplier_name or not supplier_name.strip():
+        return
+    clean_name = supplier_name.strip()
+    existing = await session.scalar(
+        select(FuelSupplier).where(
+            FuelSupplier.organization_id == organization_id,
+            func.lower(FuelSupplier.name) == clean_name.lower(),
+        )
+    )
+    if not existing:
+        new_sup = FuelSupplier(
+            organization_id=organization_id,
+            name=clean_name,
+            created_by_id=actor_id,
+        )
+        session.add(new_sup)
+
+
+@router.get("/fuel-suppliers")
+async def get_fuel_suppliers(
+    actor: User = Depends(require_permission("assets.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    rows = (
+        await session.scalars(
+            select(FuelSupplier)
+            .where(FuelSupplier.organization_id == actor.organization_id)
+            .order_by(FuelSupplier.name)
+        )
+    ).all()
+    return [{"id": str(r.id), "name": r.name} for r in rows]
+
+
 @router.get("/assets/{asset_id}/fuel-logs")
 async def fuel_logs(
     asset_id: uuid.UUID,
@@ -100,8 +151,70 @@ async def create_fuel_log(
         **body.model_dump(),
     )
     session.add(row)
+    if body.supplier:
+        await ensure_supplier_saved(session, actor.organization_id, body.supplier, actor.id)
     await session.flush()
     service.audit("asset.fuel_logged", asset_id, row)
+    await service.commit()
+    return public(service, row)
+
+
+@router.patch("/assets/{asset_id}/fuel-logs/{log_id}")
+async def update_fuel_log(
+    asset_id: uuid.UUID,
+    log_id: uuid.UUID,
+    body: FuelLogUpdate,
+    actor: User = Depends(require_permission("assets.update")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await writable_asset(service, asset_id)
+    row = await service.ref(AssetFuelLog, log_id, asset_id, lock=True)
+    if body.project_id is not None:
+        await service.ref(Project, body.project_id)
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    row.updated_by_id = actor.id
+    if body.supplier:
+        await ensure_supplier_saved(session, actor.organization_id, body.supplier, actor.id)
+    service.audit("asset.fuel_log_updated", asset_id, row)
+    await service.commit()
+    return public(service, row)
+
+
+@router.get("/assets/{asset_id}/fuel-reductions")
+async def list_fuel_reductions(
+    asset_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    actor: User = Depends(require_permission("assets.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await service.asset(asset_id)
+    return await page_records(service, AssetFuelReduction, "asset_id", asset_id, page, page_size)
+
+
+@router.post("/assets/{asset_id}/fuel-reductions", status_code=201)
+async def create_fuel_reduction(
+    asset_id: uuid.UUID,
+    body: FuelReductionCreate,
+    actor: User = Depends(require_permission("assets.update")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await writable_asset(service, asset_id)
+    if body.fuel_log_id:
+        await service.ref(AssetFuelLog, body.fuel_log_id, asset_id)
+    row = AssetFuelReduction(
+        organization_id=actor.organization_id,
+        asset_id=asset_id,
+        created_by_id=actor.id,
+        **body.model_dump(),
+    )
+    session.add(row)
+    await session.flush()
+    service.audit("asset.fuel_reduction_recorded", asset_id, row)
     await service.commit()
     return public(service, row)
 
@@ -143,6 +256,31 @@ async def create_maintenance(
     return public(service, row)
 
 
+@router.patch("/assets/{asset_id}/maintenance/{job_id}")
+async def update_maintenance(
+    asset_id: uuid.UUID,
+    job_id: uuid.UUID,
+    body: MaintenanceUpdate,
+    actor: User = Depends(require_permission("assets.update")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await writable_asset(service, asset_id)
+    row = await service.ref(AssetMaintenanceJob, job_id, asset_id, lock=True)
+    if body.project_id is not None:
+        await service.ref(Project, body.project_id)
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    row.updated_by_id = actor.id
+    if body.status == "IN_PROGRESS" and not row.started_at:
+        row.started_at = datetime.now(UTC)
+    if body.status == "COMPLETED" and not row.completed_at:
+        row.completed_at = datetime.now(UTC)
+    service.audit("asset.maintenance_updated", asset_id, row)
+    await service.commit()
+    return public(service, row)
+
+
 @router.post("/assets/{asset_id}/maintenance/{job_id}/status")
 async def maintenance_status(
     asset_id: uuid.UUID,
@@ -156,14 +294,17 @@ async def maintenance_status(
     row = await service.ref(AssetMaintenanceJob, job_id, asset_id, lock=True)
     if row.status == body.status:
         return public(service, row)
-    allowed = {"OPEN": {"IN_PROGRESS", "CANCELLED"}, "IN_PROGRESS": {"COMPLETED", "CANCELLED"}}
+    allowed = {
+        "OPEN": {"IN_PROGRESS", "COMPLETED", "CANCELLED"},
+        "IN_PROGRESS": {"COMPLETED", "CANCELLED"},
+    }
     if body.status not in allowed.get(row.status, set()):
         raise ConflictError("Maintenance cannot move to this status")
     previous = row.status
     row.status = body.status
     row.updated_by_id = actor.id
     row.completion_notes = body.notes
-    if body.status == "IN_PROGRESS":
+    if body.status == "IN_PROGRESS" and not row.started_at:
         row.started_at = datetime.now(UTC)
     if body.status == "COMPLETED":
         row.completed_at = datetime.now(UTC)
@@ -175,6 +316,91 @@ async def maintenance_status(
     )
     await service.commit()
     return public(service, row)
+
+
+@router.get("/assets/{asset_id}/logs/{log_type}/{log_id}/files")
+async def list_log_files(
+    asset_id: uuid.UUID,
+    log_type: str,
+    log_id: uuid.UUID,
+    actor: User = Depends(require_permission("assets.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await service.asset(asset_id)
+    files = (
+        await session.scalars(
+            select(AssetLogFile).where(
+                AssetLogFile.organization_id == actor.organization_id,
+                AssetLogFile.asset_id == asset_id,
+                AssetLogFile.log_type == log_type.upper(),
+                AssetLogFile.log_id == log_id,
+            )
+        )
+    ).all()
+    return [service.public(f) for f in files]
+
+
+@router.post("/assets/{asset_id}/logs/{log_type}/{log_id}/files", status_code=201)
+async def upload_log_file(
+    asset_id: uuid.UUID,
+    log_type: str,
+    log_id: uuid.UUID,
+    request: Request,
+    title: str = Form(..., min_length=1, max_length=200),
+    file: UploadFile = File(...),
+    actor: User = Depends(require_permission("assets.update")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await writable_asset(service, asset_id)
+    storage = request.app.state.storage
+    data = await file.read(storage.max_bytes + 1)
+    if not data:
+        raise ValidationError("File is empty")
+    stored = await run_in_threadpool(
+        storage.save,
+        f"asset-log-files/{actor.organization_id}/{asset_id}/{log_type.lower()}",
+        data,
+        file.filename or "",
+        file.content_type,
+    )
+    row = AssetLogFile(
+        organization_id=actor.organization_id,
+        asset_id=asset_id,
+        log_type=log_type.upper(),
+        log_id=log_id,
+        title=title.strip(),
+        storage_path=stored.relative_path,
+        file_name=stored.filename,
+        mime_type=stored.mime_type,
+        size_bytes=stored.size_bytes,
+        created_by_id=actor.id,
+    )
+    session.add(row)
+    await session.flush()
+    service.audit("asset.log_file_uploaded", asset_id, row)
+    await service.commit()
+    return service.public(row)
+
+
+@router.get("/assets/{asset_id}/log-files/{file_id}/download")
+async def download_log_file(
+    asset_id: uuid.UUID,
+    file_id: uuid.UUID,
+    request: Request,
+    actor: User = Depends(require_permission("assets.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await service.asset(asset_id)
+    row = await service.ref(AssetLogFile, file_id)
+    if not row or row.asset_id != asset_id:
+        raise NotFoundError("File not found")
+    path = await run_in_threadpool(request.app.state.storage.resolve, row.storage_path)
+    if not path.is_file():
+        raise NotFoundError("File not found")
+    return FileResponse(path, filename=row.file_name, media_type="application/octet-stream")
 
 
 @router.get("/assets/{asset_id}/operating-metrics")
@@ -386,3 +612,88 @@ async def retire_asset(
     service.audit("asset.retired", asset_id, values={"reason": body.reason})
     await service.commit()
     return service.public(asset)
+
+
+@router.patch("/assets/{asset_id}/inspections/{inspection_id}")
+async def update_inspection(
+    asset_id: uuid.UUID,
+    inspection_id: uuid.UUID,
+    body: InspectionUpdate,
+    actor: User = Depends(require_permission("assets.inspections.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await writable_asset(service, asset_id)
+    row = await service.ref(AssetInspection, inspection_id, asset_id, lock=True)
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    row.updated_by_id = actor.id
+    service.audit("asset.inspection_updated", asset_id, row)
+    await service.commit()
+    return service.public(row)
+
+
+@router.get("/assets/{asset_id}/assignments/{assignment_id}/summary")
+async def assignment_summary(
+    asset_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    actor: User = Depends(require_permission("assets.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await service.asset(asset_id)
+    assignment = await service.ref(AssetAssignment, assignment_id, asset_id)
+    if not assignment:
+        raise NotFoundError("Assignment not found")
+    start = assignment.assigned_at
+    end = assignment.returned_at or datetime.now(UTC)
+
+    fuel_query = select(
+        func.coalesce(func.sum(AssetFuelLog.quantity_litres), 0).label("litres"),
+        func.coalesce(func.sum(AssetFuelLog.quantity_litres * AssetFuelLog.unit_cost), 0).label(
+            "cost"
+        ),
+    ).where(
+        AssetFuelLog.organization_id == actor.organization_id,
+        AssetFuelLog.asset_id == asset_id,
+        AssetFuelLog.recorded_at >= start,
+        AssetFuelLog.recorded_at <= end,
+    )
+    fuel_res = (await session.execute(fuel_query)).one()
+
+    maint_query = select(
+        func.coalesce(func.sum(AssetMaintenanceJob.cost), 0).label("cost"),
+        func.count(AssetMaintenanceJob.id).label("count"),
+    ).where(
+        AssetMaintenanceJob.organization_id == actor.organization_id,
+        AssetMaintenanceJob.asset_id == asset_id,
+        AssetMaintenanceJob.created_at >= start,
+        AssetMaintenanceJob.created_at <= end,
+    )
+    maint_res = (await session.execute(maint_query)).one()
+
+    inspect_count = (
+        await session.scalar(
+            select(func.count(AssetInspection.id)).where(
+                AssetInspection.organization_id == actor.organization_id,
+                AssetInspection.asset_id == asset_id,
+                AssetInspection.inspection_date >= start,
+                AssetInspection.inspection_date <= end,
+            )
+        )
+        or 0
+    )
+
+    return {
+        "assignment_id": str(assignment.id),
+        "project_id": str(assignment.project_id) if assignment.project_id else None,
+        "assigned_at": assignment.assigned_at,
+        "returned_at": assignment.returned_at,
+        "start_meter": assignment.start_meter_reading,
+        "end_meter": assignment.end_meter_reading,
+        "fuel_litres": fuel_res.litres,
+        "fuel_cost": fuel_res.cost if service.permitted("assets.financial.read") else None,
+        "maintenance_cost": maint_res.cost if service.permitted("assets.financial.read") else None,
+        "maintenance_count": maint_res.count,
+        "inspections_count": inspect_count,
+    }

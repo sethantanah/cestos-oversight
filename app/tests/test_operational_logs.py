@@ -40,24 +40,34 @@ async def test_asset_fuel_maintenance_metrics_and_retirement(client, identities,
     assert response.status_code == 201, response.text
     job = response.json()
     url = root + "/maintenance/" + job["id"] + "/status"
-    assert (
-        await client.post(url, headers=h, json={"status": "COMPLETED", "notes": "Too early"})
-    ).status_code == 409
+    # Verify OPEN → COMPLETED direct transition is now allowed
+    response = await client.post(
+        url, headers=h, json={"status": "COMPLETED", "notes": "Done directly"}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "COMPLETED"
+    # Asset is not yet retired; retire attempt while jobs open should fail
     assert (
         await client.post(root + "/retire", headers=h, json={"reason": "End of life"})
     ).status_code == 409
-    for status in ["IN_PROGRESS", "COMPLETED", "COMPLETED"]:
-        response = await client.post(
-            url, headers=h, json={"status": status, "notes": "Checked and serviced"}
-        )
-        assert response.status_code == 200, response.text
-        assert response.json()["status"] == status
+    # Create a second job to test sequential transitions: OPEN → IN_PROGRESS → COMPLETED
+    response2 = await client.post(
+        root + "/maintenance", headers=h, json={"title": "Tyre rotation", "cost": "20.00"}
+    )
+    assert response2.status_code == 201, response2.text
+    job2 = response2.json()
+    url2 = root + "/maintenance/" + job2["id"] + "/status"
+    for status in ["IN_PROGRESS", "COMPLETED"]:
+        r = await client.post(url2, headers=h, json={"status": status, "notes": "Checked"})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == status
+    # Cannot transition back from COMPLETED
     assert (
-        await client.post(url, headers=h, json={"status": "IN_PROGRESS", "notes": "Reopen"})
+        await client.post(url2, headers=h, json={"status": "IN_PROGRESS", "notes": "Reopen"})
     ).status_code == 409
     metrics = (await client.get(root + "/operating-metrics", headers=h)).json()
     assert float(metrics["fuel_litres"]) == 25.125
-    assert metrics["maintenance_by_status"] == [{"status": "COMPLETED", "count": 1}]
+    assert metrics["maintenance_by_status"] == [{"status": "COMPLETED", "count": 2}]
     response = await client.post(
         root + "/retire", headers=h, json={"reason": "End of service life"}
     )
