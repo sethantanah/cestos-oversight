@@ -203,12 +203,12 @@ async def seed(session: AsyncSession, settings: Settings) -> None:
 async def main() -> None:
     settings = get_settings()
     engine = build_engine(settings)
+    include_employees = (settings.app_env != "production")
     try:
-        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-            await seed(session, settings)
-            from scripts.sync_inventory_permissions import sync
-            async with session.begin():
-                await sync(session)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            from scripts.seed_realistic import seed_realistic
+            await seed_realistic(session, settings, include_employees=include_employees)
         print(f"Seed complete. Organization ID: {ORGANIZATION_ID}")
     finally:
         await engine.dispose()
