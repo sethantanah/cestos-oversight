@@ -33,23 +33,29 @@ def personal_scope(actor):
 
 def visible_scope(actor):
     codes = permissions(actor)
-    oversight = []
     if actor.is_superuser or codes.intersection({"documents.admin", "documents.read_all"}):
-        oversight.append(D.visibility == "PRIVATE")
-    else:
-        for category, grants in {
-            "People": {
-                "employees.documents.read",
-                "employee_documents.read",
-                "employees.read_sensitive",
-            },
-            "Equipment": {"assets.documents.read", "asset_documents.read"},
-            "Inventory": {"inventory.admin", "inventory.catalog.manage"},
-            "Projects": {"projects.update"},
-            "Leave": {"employees.leave.approve"},
-        }.items():
-            if codes.intersection(grants):
-                oversight.append(D.category == category)
+        return and_(
+            D.organization_id == actor.organization_id,
+            D.is_active.is_(True),
+            or_(
+                and_(D.visibility == "SUPER_PRIVATE", D.private_to_id == actor.id),
+                D.visibility != "SUPER_PRIVATE",
+            ),
+        )
+    oversight = []
+    for category, grants in {
+        "People": {
+            "employees.documents.read",
+            "employee_documents.read",
+            "employees.read_sensitive",
+        },
+        "Equipment": {"assets.documents.read", "asset_documents.read"},
+        "Inventory": {"inventory.admin", "inventory.catalog.manage"},
+        "Projects": {"projects.update"},
+        "Leave": {"employees.leave.approve"},
+    }.items():
+        if codes.intersection(grants):
+            oversight.append(D.category == category)
     return and_(
         D.organization_id == actor.organization_id,
         D.is_active.is_(True),
