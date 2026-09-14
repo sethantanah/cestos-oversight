@@ -1,5 +1,6 @@
 """Single-instance development entry point with integrated database migration."""
 
+import os
 import subprocess
 import sys
 
@@ -18,12 +19,15 @@ if __name__ == "__main__":
         print("Database migration failed. Aborting startup.")
         sys.exit(1)
     
-    print("Starting Cestos application...")
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+
+    print(f"Starting Cestos application on {host}:{port}...")
     uvicorn.run(
         "app.main:create_app",
         factory=True,
-        host="::",
-        port=8000,
+        host=host,
+        port=port,
         access_log=False,
         proxy_headers=False,
         loop="app.core.event_loop:loop_factory",
