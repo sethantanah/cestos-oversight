@@ -6,7 +6,7 @@ infrastructure. Operational modules deliberately contain design notes rather tha
 
 ## Architecture
 
-Python 3.12+, FastAPI, Pydantic v2, SQLAlchemy 2 async sessions, psycopg 3, PostgreSQL and Alembic.
+Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 async sessions, psycopg 3, PostgreSQL and Alembic.
 The checked-in `uv.lock` records exact dependency versions. Redis is optional and no application
 functionality depends on it yet. Ruff handles formatting and linting; mypy runs in strict mode.
 
@@ -35,7 +35,7 @@ during response serialization. ORM relationships use explicit eager loading when
 
 ## Prerequisites and setup
 
-- Python 3.12 or later and uv
+- Python 3.12 and uv (the OCR dependency currently requires Python below 3.13)
 - Docker Desktop/Engine with Compose, or a local PostgreSQL server
 - A random JWT signing secret of at least 32 characters
 
@@ -46,7 +46,7 @@ Copy-Item .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 # Put the generated value into JWT_SECRET_KEY in .env.
 # Set INITIAL_ADMIN_EMAIL and a 12–128 character INITIAL_ADMIN_PASSWORD.
-uv sync --frozen
+uv sync --locked
 uv run pre-commit install
 ```
 
