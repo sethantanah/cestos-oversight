@@ -15,6 +15,7 @@ def build_engine(settings: Settings) -> AsyncEngine:
         max_overflow=getattr(settings, "db_max_overflow", 30),
         pool_timeout=getattr(settings, "db_pool_timeout", 60),
         pool_recycle=1800,
+        connect_args={"prepare_threshold": None},
     )
 
 
