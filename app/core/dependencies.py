@@ -66,32 +66,36 @@ def scoped_roles(user: User) -> list[Role]:
 
 def require_permission(code: str) -> Callable[..., Coroutine[Any, Any, User]]:
     async def dependency(user: User = Depends(get_current_active_user)) -> User:
-        if not user.is_superuser and not any(
-            permission.code
-            in {
-                code,
-                {
-                    "assets.meter.record": "assets.record_meter",
-                    "assets.record_meter": "assets.meter.record",
-                    "assets.documents.read": "asset_documents.read",
-                    "asset_documents.read": "assets.documents.read",
-                    "assets.documents.manage": "asset_documents.manage",
-                    "asset_documents.manage": "assets.documents.manage",
-                    "departments.manage": "employees.update",
-                    "positions.manage": "employees.update",
-                    "employees.contracts.manage": "employees.documents.manage",
-                    "projects.tasks.manage": "projects.update",
-                    "assets.assignments.manage": "assets.update",
-                    "assets.transfers.manage": "assets.update",
-                    "assets.logs.write": "assets.update",
-                    "projects.financials.read": "projects.read",
-                    "intelligence.read": "projects.read",
-                    "roles.manage": "users.create",
-                }.get(code, code),
+        if user.is_superuser:
+            return user
+        from sqlalchemy.exc import InvalidRequestError
+        try:
+            user_perms = {
+                permission.code
+                for role in scoped_roles(user)
+                for permission in role.permissions
             }
-            for role in scoped_roles(user)
-            for permission in role.permissions
-        ):
+        except (InvalidRequestError, AttributeError):
+            user_perms = set()
+        alias = {
+            "assets.meter.record": "assets.record_meter",
+            "assets.record_meter": "assets.meter.record",
+            "assets.documents.read": "asset_documents.read",
+            "asset_documents.read": "assets.documents.read",
+            "assets.documents.manage": "asset_documents.manage",
+            "asset_documents.manage": "assets.documents.manage",
+            "departments.manage": "employees.update",
+            "positions.manage": "employees.update",
+            "employees.contracts.manage": "employees.documents.manage",
+            "projects.tasks.manage": "projects.update",
+            "assets.assignments.manage": "assets.update",
+            "assets.transfers.manage": "assets.update",
+            "assets.logs.write": "assets.update",
+            "projects.financials.read": "projects.read",
+            "intelligence.read": "projects.read",
+            "roles.manage": "users.create",
+        }.get(code, code)
+        if not user_perms.intersection({code, alias}):
             raise ForbiddenError("Required permission is missing")
         return user
 

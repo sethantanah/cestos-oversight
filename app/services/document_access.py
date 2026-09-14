@@ -1,6 +1,5 @@
-"""One visibility predicate for catalog, retrieval and source file endpoints."""
-
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import InvalidRequestError
 
 from app.core.dependencies import scoped_roles
 from app.core.exceptions import NotFoundError
@@ -9,7 +8,12 @@ from app.models.document_library import LibraryDocument as D
 
 
 def permissions(actor):
-    return {p.code for role in scoped_roles(actor) for p in role.permissions}
+    if not actor:
+        return set()
+    try:
+        return {p.code for role in scoped_roles(actor) for p in role.permissions}
+    except (InvalidRequestError, AttributeError):
+        return set()
 
 
 def is_document_admin(actor):

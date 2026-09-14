@@ -26,7 +26,7 @@ class UserRepository:
             await self.session.scalars(
                 organization_query(User, self.organization_id)
                 .where(User.email == email.lower())
-                .options(selectinload(User.roles))
+                .options(selectinload(User.roles).selectinload(Role.permissions))
             )
         ).one_or_none()
 
@@ -34,7 +34,7 @@ class UserRepository:
         query = organization_query(User, self.organization_id)
         total = await self.session.scalar(select(func.count()).select_from(query.subquery()))
         rows = await self.session.scalars(
-            query.options(selectinload(User.roles))
+            query.options(selectinload(User.roles).selectinload(Role.permissions))
             .order_by(User.created_at, User.id)
             .offset((page - 1) * page_size)
             .limit(page_size)
