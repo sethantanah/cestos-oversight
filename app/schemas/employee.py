@@ -69,6 +69,7 @@ class PositionCreate(BaseModel):
     grade: str | None = Field(default=None, max_length=50)
     level: str | None = Field(default=None, max_length=50)
     is_field_role: bool = False
+    is_supervisory_role: bool = False
 
 
 class PositionUpdate(BaseModel):
@@ -79,6 +80,7 @@ class PositionUpdate(BaseModel):
     grade: str | None = Field(default=None, max_length=50)
     level: str | None = Field(default=None, max_length=50)
     is_field_role: bool | None = None
+    is_supervisory_role: bool | None = None
     is_active: bool | None = None
 
 
@@ -92,6 +94,7 @@ class PositionRead(ORMModel):
     grade: str | None
     level: str | None
     is_field_role: bool
+    is_supervisory_role: bool = False
     is_active: bool
     created_at: datetime
     updated_at: datetime

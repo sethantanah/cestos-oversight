@@ -54,7 +54,27 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-        return error_response(422, "VALIDATION_ERROR", "Request validation failed")
+        fields = []
+        for issue in exc.errors():
+            location = ".".join(str(part) for part in issue["loc"] if part != "body")
+            kind = issue["type"]
+            if kind == "missing":
+                message = "This field is required"
+            elif kind == "enum" or kind == "literal_error":
+                message = "Select a valid option"
+            elif "email" in issue.get("msg", "").lower():
+                message = "Enter a valid email address"
+            else:
+                message = "Check the value and format"
+            fields.append({"field": location, "message": message})
+        message = (
+            "; ".join(f"{item['field'].replace('_', ' ')}: {item['message']}" for item in fields)
+            or "Request validation failed"
+        )
+        return JSONResponse(
+            status_code=422,
+            content={"error": {"code": "VALIDATION_ERROR", "message": message, "fields": fields}},
+        )
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException) -> JSONResponse:

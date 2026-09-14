@@ -134,10 +134,14 @@ __all__ = [
     "user_roles",
 ]
 
-from app.models.hr import ContractAlertRule, Notification, PasswordSetup, Salary  # noqa: F401
+from app.models.hr import ContractAlertRule, Notification, NotificationSchedule, PasswordSetup, Salary  # noqa: F401
 
 from app.models import asset_records  # noqa: F401
 
 from app.models import inventory  # noqa: F401
 
 from app.models import operational_logs as operational_logs
+from app.models import project_report as project_report
+
+from app.models.document_library import LibraryDocument  # noqa: F401
+from app.models.intelligence import AssistantChatMessage  # noqa: F401

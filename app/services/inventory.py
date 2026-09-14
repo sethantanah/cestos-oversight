@@ -210,7 +210,11 @@ class InventoryService:
         model = MASTERS[kind]
         data = body.model_dump(exclude_unset=identifier is not None)
         if identifier and kind == "items" and "is_active" in data:
-            raise ValidationError("Use archive or restore to change item activity")
+            row_current = await self.ref(model, identifier, True)
+            if data["is_active"] != row_current.is_active:
+                raise ValidationError("Use archive or restore to change item activity")
+            else:
+                data.pop("is_active")
         await self.validate_refs(data)
         row: Any = (
             await self.ref(model, identifier, True)

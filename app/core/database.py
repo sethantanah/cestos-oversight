@@ -8,7 +8,14 @@ from app.core.config import Settings
 
 
 def build_engine(settings: Settings) -> AsyncEngine:
-    return create_async_engine(settings.database_url, pool_pre_ping=True, pool_recycle=1800)
+    return create_async_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=getattr(settings, "db_pool_size", 20),
+        max_overflow=getattr(settings, "db_max_overflow", 30),
+        pool_timeout=getattr(settings, "db_pool_timeout", 60),
+        pool_recycle=1800,
+    )
 
 
 async def wait_for_database(engine: AsyncEngine, attempts: int = 10) -> None:

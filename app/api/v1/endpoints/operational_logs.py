@@ -14,8 +14,9 @@ from starlette.concurrency import run_in_threadpool
 from app.core.dependencies import require_permission
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.session import get_session
-from app.models import AssetAssignment, Project, User
-from app.models.asset_records import AssetInspection
+from app.models import AssetAssignment, Employee, Project, User
+from app.models.asset import AssetMeterReading
+from app.models.asset_records import AssetDefect, AssetInspection
 from app.models.operational_logs import (
     AssetFuelLog,
     AssetFuelReduction,
@@ -32,6 +33,7 @@ from app.schemas.operational_logs import (
     MaintenanceCreate,
     MaintenanceStatus,
     MaintenanceUpdate,
+    MeterReadingUpdate,
     ProjectNoteCreate,
     RetireAsset,
 )
@@ -68,8 +70,24 @@ async def page_records(
             .limit(page_size)
         )
     ).all()
+    items = [public(service, row) for row in records]
+    if model == AssetMaintenanceJob:
+        emp_ids = {item["assigned_employee_id"] for item in items if item.get("assigned_employee_id")}
+        if emp_ids:
+            employees = (
+                await service.session.scalars(
+                    select(Employee).where(Employee.id.in_(emp_ids))
+                )
+            ).all()
+            emp_map = {
+                emp.id: f"{emp.first_name} {emp.last_name}".strip() or emp.email
+                for emp in employees
+            }
+            for item in items:
+                if item.get("assigned_employee_id"):
+                    item["assigned_employee_name"] = emp_map.get(item["assigned_employee_id"])
     return {
-        "items": [public(service, row) for row in records],
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -241,7 +259,10 @@ async def create_maintenance(
 ) -> Any:
     service = EquipmentService(session, actor)
     await writable_asset(service, asset_id)
-    await service.ref(Project, body.project_id)
+    if body.project_id is not None:
+        await service.ref(Project, body.project_id)
+    if body.assigned_employee_id is not None:
+        await service.ref(Employee, body.assigned_employee_id)
     row = AssetMaintenanceJob(
         organization_id=actor.organization_id,
         asset_id=asset_id,
@@ -253,7 +274,12 @@ async def create_maintenance(
     await session.flush()
     service.audit("asset.maintenance_created", asset_id, row)
     await service.commit()
-    return public(service, row)
+    res = public(service, row)
+    if row.assigned_employee_id:
+        emp = await service.session.get(Employee, row.assigned_employee_id)
+        if emp:
+            res["assigned_employee_name"] = f"{emp.first_name} {emp.last_name}".strip() or emp.email
+    return res
 
 
 @router.patch("/assets/{asset_id}/maintenance/{job_id}")
@@ -267,18 +293,55 @@ async def update_maintenance(
     service = EquipmentService(session, actor)
     await writable_asset(service, asset_id)
     row = await service.ref(AssetMaintenanceJob, job_id, asset_id, lock=True)
+    if body.status is not None and body.status != row.status:
+        allowed = {
+            "OPEN": {"IN_PROGRESS", "COMPLETED", "CANCELLED"},
+            "IN_PROGRESS": {"COMPLETED", "CANCELLED"},
+        }
+        if body.status not in allowed.get(row.status, set()):
+            raise ConflictError("Maintenance cannot move to this status")
     if body.project_id is not None:
         await service.ref(Project, body.project_id)
+    if body.assigned_employee_id is not None:
+        await service.ref(Employee, body.assigned_employee_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
     row.updated_by_id = actor.id
     if body.status == "IN_PROGRESS" and not row.started_at:
         row.started_at = datetime.now(UTC)
-    if body.status == "COMPLETED" and not row.completed_at:
-        row.completed_at = datetime.now(UTC)
+    if body.status == "COMPLETED":
+        if not row.completed_at:
+            row.completed_at = datetime.now(UTC)
+        if row.is_recurring and row.recurrence_interval_days and row.recurrence_interval_days > 0:
+            next_date = date.today() + timedelta(days=row.recurrence_interval_days)
+            next_job = AssetMaintenanceJob(
+                organization_id=actor.organization_id,
+                asset_id=asset_id,
+                created_by_id=actor.id,
+                project_id=row.project_id,
+                title=row.title,
+                description=row.description,
+                maintenance_type=row.maintenance_type,
+                priority=row.priority,
+                status="OPEN",
+                scheduled_date=next_date,
+                assigned_employee_id=row.assigned_employee_id,
+                is_recurring=True,
+                recurrence_interval_days=row.recurrence_interval_days,
+                cost=row.cost,
+                currency=row.currency,
+            )
+            session.add(next_job)
+            await session.flush()
+            service.audit("asset.maintenance_created_recurring", asset_id, next_job)
     service.audit("asset.maintenance_updated", asset_id, row)
     await service.commit()
-    return public(service, row)
+    res = public(service, row)
+    if row.assigned_employee_id:
+        emp = await service.session.get(Employee, row.assigned_employee_id)
+        if emp:
+            res["assigned_employee_name"] = f"{emp.first_name} {emp.last_name}".strip() or emp.email
+    return res
 
 
 @router.post("/assets/{asset_id}/maintenance/{job_id}/status")
@@ -318,6 +381,24 @@ async def maintenance_status(
     return public(service, row)
 
 
+async def validate_log(
+    service: EquipmentService, asset_id: uuid.UUID, log_type: str, log_id: uuid.UUID
+) -> None:
+    models = {
+        "FUEL": AssetFuelLog,
+        "MAINTENANCE": AssetMaintenanceJob,
+        "INSPECTION": AssetInspection,
+        "METER": AssetMeterReading,
+        "FUEL_REDUCTION": AssetFuelReduction,
+        "DEFECT": AssetDefect,
+        "DEFECTS": AssetDefect,
+    }
+    model = models.get(log_type.upper())
+    if model is None:
+        raise ValidationError("Unsupported log type")
+    await service.ref(model, log_id, asset_id)
+
+
 @router.get("/assets/{asset_id}/logs/{log_type}/{log_id}/files")
 async def list_log_files(
     asset_id: uuid.UUID,
@@ -328,6 +409,7 @@ async def list_log_files(
 ) -> Any:
     service = EquipmentService(session, actor)
     await service.asset(asset_id)
+    await validate_log(service, asset_id, log_type, log_id)
     files = (
         await session.scalars(
             select(AssetLogFile).where(
@@ -354,34 +436,44 @@ async def upload_log_file(
 ) -> Any:
     service = EquipmentService(session, actor)
     await writable_asset(service, asset_id)
+    await validate_log(service, asset_id, log_type, log_id)
+    if not title.strip():
+        raise ValidationError("File title is required")
     storage = request.app.state.storage
     data = await file.read(storage.max_bytes + 1)
     if not data:
         raise ValidationError("File is empty")
-    stored = await run_in_threadpool(
-        storage.save,
-        f"asset-log-files/{actor.organization_id}/{asset_id}/{log_type.lower()}",
-        data,
-        file.filename or "",
-        file.content_type,
-    )
-    row = AssetLogFile(
-        organization_id=actor.organization_id,
-        asset_id=asset_id,
-        log_type=log_type.upper(),
-        log_id=log_id,
-        title=title.strip(),
-        storage_path=stored.relative_path,
-        file_name=stored.filename,
-        mime_type=stored.mime_type,
-        size_bytes=stored.size_bytes,
-        created_by_id=actor.id,
-    )
-    session.add(row)
-    await session.flush()
-    service.audit("asset.log_file_uploaded", asset_id, row)
-    await service.commit()
-    return service.public(row)
+    try:
+        stored = await run_in_threadpool(
+            storage.save,
+            f"asset-log-files/{actor.organization_id}/{asset_id}/{log_type.lower()}",
+            data,
+            file.filename or "",
+            file.content_type,
+        )
+    except ValueError as error:
+        raise ValidationError(str(error)) from error
+    try:
+        row = AssetLogFile(
+            organization_id=actor.organization_id,
+            asset_id=asset_id,
+            log_type=log_type.upper(),
+            log_id=log_id,
+            title=title.strip(),
+            storage_path=stored.relative_path,
+            file_name=stored.filename,
+            mime_type=stored.mime_type,
+            size_bytes=stored.size_bytes,
+            created_by_id=actor.id,
+        )
+        session.add(row)
+        await session.flush()
+        service.audit("asset.log_file_uploaded", asset_id, row)
+        await service.commit()
+        return service.public(row)
+    except BaseException:
+        await run_in_threadpool(storage.delete, stored.relative_path)
+        raise
 
 
 @router.get("/assets/{asset_id}/log-files/{file_id}/download")
@@ -396,6 +488,10 @@ async def download_log_file(
     await service.asset(asset_id)
     row = await service.ref(AssetLogFile, file_id)
     if not row or row.asset_id != asset_id:
+        raise NotFoundError("File not found")
+    await validate_log(service, asset_id, row.log_type, row.log_id)
+    expected = f"asset-log-files/{actor.organization_id}/{asset_id}/{row.log_type.lower()}/"
+    if not row.storage_path.startswith(expected):
         raise NotFoundError("File not found")
     path = await run_in_threadpool(request.app.state.storage.resolve, row.storage_path)
     if not path.is_file():
@@ -625,10 +721,34 @@ async def update_inspection(
     service = EquipmentService(session, actor)
     await writable_asset(service, asset_id)
     row = await service.ref(AssetInspection, inspection_id, asset_id, lock=True)
+    await service.validate_fields(body.model_dump(exclude_unset=True), asset_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
     row.updated_by_id = actor.id
     service.audit("asset.inspection_updated", asset_id, row)
+    await service.commit()
+    return service.public(row)
+
+
+@router.patch("/assets/{asset_id}/meter-readings/{reading_id}")
+async def update_meter_reading(
+    asset_id: uuid.UUID,
+    reading_id: uuid.UUID,
+    body: MeterReadingUpdate,
+    actor: User = Depends(require_permission("assets.meter.record")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = EquipmentService(session, actor)
+    await writable_asset(service, asset_id)
+    row = await service.ref(AssetMeterReading, reading_id, asset_id, lock=True)
+    if body.project_id is not None:
+        await service.ref(Project, body.project_id)
+    if body.location_id is not None:
+        await service.ref(Location, body.location_id)
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    row.updated_by_id = actor.id
+    service.audit("asset.meter_reading_updated", asset_id, row)
     await service.commit()
     return service.public(row)
 

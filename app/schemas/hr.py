@@ -26,6 +26,8 @@ class SalaryCreate(BaseModel):
 class SalaryRead(SalaryCreate, ORMModel):
     id: uuid.UUID
     employee_id: uuid.UUID
+    employee_name: str | None = None
+    employee_number: str | None = None
 
 
 class SalaryEnd(BaseModel):
@@ -75,3 +77,39 @@ class SelfEmergencyContact(BaseModel):
     address: str = Field(min_length=1, max_length=1000)
     secondary_phone: str | None = Field(default=None, min_length=1, max_length=50)
     email: EmailStr | None = None
+
+
+class NotificationScheduleCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    domain: Literal["PROJECTS", "WORKFORCE", "EQUIPMENT", "INVENTORY"] = "INVENTORY"
+    rule_type: str = Field(min_length=1, max_length=100)
+    lead_time_days: int = Field(default=14, ge=0, le=365)
+    frequency: Literal["ONCE", "DAILY", "EVERY_OTHER_DAY", "WEEKLY", "BIWEEKLY", "MONTHLY"] = "DAILY"
+    priority_tag: Literal["NORMAL", "IMPORTANT", "CRITICAL"] = "IMPORTANT"
+    delivery_method: Literal["ON_PLATFORM", "EMAIL", "BOTH"] = "BOTH"
+    recipient_user_ids: list[uuid.UUID] = Field(default_factory=list)
+    recipient_roles: list[str] = Field(default_factory=list)
+    is_active: bool = True
+
+
+class NotificationScheduleUpdate(BaseModel):
+    title: str | None = None
+    domain: Literal["PROJECTS", "WORKFORCE", "EQUIPMENT", "INVENTORY"] | None = None
+    rule_type: str | None = None
+    lead_time_days: int | None = None
+    frequency: Literal["ONCE", "DAILY", "EVERY_OTHER_DAY", "WEEKLY", "BIWEEKLY", "MONTHLY"] | None = None
+    priority_tag: Literal["NORMAL", "IMPORTANT", "CRITICAL"] | None = None
+    delivery_method: Literal["ON_PLATFORM", "EMAIL", "BOTH"] | None = None
+    recipient_user_ids: list[uuid.UUID] | None = None
+    recipient_roles: list[str] | None = None
+    is_active: bool | None = None
+
+
+class NotificationScheduleRead(NotificationScheduleCreate, ORMModel):
+    id: uuid.UUID
+
+
+class NotificationForwardRequest(BaseModel):
+    target_user_id: uuid.UUID | None = None
+    target_user_ids: list[uuid.UUID] | None = None
+    notes: str | None = Field(default=None, max_length=1000)

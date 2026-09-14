@@ -43,6 +43,9 @@ class MaintenanceCreate(Input):
     provider: str | None = Field(default=None, max_length=200)
     cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
     currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
+    assigned_employee_id: uuid.UUID | None = None
+    is_recurring: bool = False
+    recurrence_interval_days: int | None = Field(default=None, ge=1, le=365)
 
 
 class MaintenanceStatus(Input):
@@ -88,6 +91,9 @@ class MaintenanceUpdate(Input):
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     status: Literal["OPEN", "IN_PROGRESS", "COMPLETED", "CANCELLED"] | None = None
     completion_notes: str | None = Field(default=None, max_length=20000)
+    assigned_employee_id: uuid.UUID | None = None
+    is_recurring: bool | None = None
+    recurrence_interval_days: int | None = Field(default=None, ge=1, le=365)
 
 
 class FuelReductionCreate(Input):
@@ -108,3 +114,16 @@ class InspectionUpdate(Input):
     defects_found: bool | None = None
     defect_notes: str | None = Field(default=None, max_length=20000)
     follow_up_required: bool | None = None
+
+
+class MeterReadingUpdate(Input):
+    reading: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    recorded_at: datetime | None = None
+    reading_type: Literal["HOURS", "ODOMETER", "MILES", "NONE"] | None = None
+    source: str | None = Field(default=None, max_length=50)
+    project_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+    notes: str | None = Field(default=None, max_length=20000)
+    is_correction: bool | None = None
+    is_adjustment: bool | None = None
+    adjustment_reason: str | None = Field(default=None, max_length=20000)

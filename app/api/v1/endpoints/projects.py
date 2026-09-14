@@ -45,6 +45,56 @@ async def list_projects(
     )
 
 
+@router.get("/dashboard-summary")
+async def projects_dashboard_summary(
+    status: ProjectStatus | None = Query(None),
+    client_id: uuid.UUID | None = Query(None),
+    location_id: uuid.UUID | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    actor: User = Depends(require_permission("projects.read")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy import func, select
+    from app.models.project import Project, ProjectStatus
+    from datetime import UTC, datetime
+
+    stmt = select(Project).where(
+        Project.organization_id == actor.organization_id,
+        Project.archived_at.is_(None),
+    )
+    if status:
+        stmt = stmt.where(Project.status == status)
+    if client_id:
+        stmt = stmt.where(Project.client_id == client_id)
+    if location_id:
+        stmt = stmt.where(Project.location_id == location_id)
+    if date_from:
+        stmt = stmt.where(Project.start_date >= date_from)
+    if date_to:
+        stmt = stmt.where(Project.start_date <= date_to)
+
+    rows = (await session.scalars(stmt)).all()
+    total = len(rows)
+
+    by_status: dict[str, int] = {}
+    overdue = 0
+    today = date.today()
+
+    for p in rows:
+        st = str(p.status.value if hasattr(p.status, "value") else p.status)
+        by_status[st] = by_status.get(st, 0) + 1
+        if p.status == ProjectStatus.ACTIVE and p.end_date and p.end_date < today:
+            overdue += 1
+
+    return {
+        "total": total,
+        "by_status": by_status,
+        "overdue": overdue,
+        "without_recent_update": 0,
+    }
+
+
 @router.post("", response_model=ProjectRead, status_code=201)
 async def create_project(
     body: ProjectCreate,

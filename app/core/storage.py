@@ -33,6 +33,24 @@ ALLOWED_EXTENSIONS = frozenset(
 )
 
 
+DOCUMENT_NAMESPACES = {
+    "documents",
+    "employee-documents",
+    "employee-resumes",
+    "asset-documents",
+    "asset-log-files",
+    "project-files",
+    "project-reports",
+    "leave-letters",
+    "stores",
+    "items",
+}
+
+
+def document_path(path: str) -> bool:
+    return path.split("/", 1)[0] in DOCUMENT_NAMESPACES
+
+
 @dataclass(frozen=True)
 class StoredFile:
     relative_path: (
@@ -61,7 +79,7 @@ class LocalStorage:
         if len(data) > self.max_bytes:
             raise ValueError(f"File exceeds the {self.max_bytes // (1024 * 1024)} MB upload limit")
         suffix = Path(original_filename or "").suffix.lower()
-        if suffix not in ALLOWED_EXTENSIONS:
+        if suffix not in ALLOWED_EXTENSIONS and not namespace.startswith("documents/"):
             raise ValueError(
                 f"Extension '{suffix or '(none)'}' is not allowed; "
                 f"allowed: {sorted(ALLOWED_EXTENSIONS)}"
@@ -103,6 +121,8 @@ class SupabaseStorage:
             )
         self.url = url.rstrip("/")
         self.bucket = bucket
+        self.document_bucket = bucket + "-documents"
+        self.private_bucket_ready = False
         self.max_bytes = max_bytes
         self.client = create_client(self.url, service_role_key)
         try:
@@ -117,6 +137,40 @@ class SupabaseStorage:
         except Exception:
             pass
 
+    def private_bucket(self):
+        if not self.private_bucket_ready:
+            names = {
+                getattr(b, "name", None) or (b.get("name") if isinstance(b, dict) else None)
+                for b in self.client.storage.list_buckets()
+            }
+            if self.document_bucket not in names:
+                self.client.storage.create_bucket(self.document_bucket, {"public": False})
+            else:
+                self.client.storage.update_bucket(self.document_bucket, {"public": False})
+            self.private_bucket_ready = True
+        return self.client.storage.from_(self.document_bucket)
+
+    def bucket_for(self, path):
+        return (
+            self.private_bucket() if document_path(path) else self.client.storage.from_(self.bucket)
+        )
+
+    def ensure_private(self, path):
+        # Copy legacy document objects to private storage before removing their public copies.
+        if not document_path(path):
+            return
+        private = self.private_bucket()
+        old = self.client.storage.from_(self.bucket)
+        try:
+            data = old.download(path)
+        except Exception as error:
+            status = getattr(error, "status", None) or getattr(error, "status_code", None)
+            if str(status) == "404":
+                return
+            raise
+        private.upload(path, data, {"content-type": "application/octet-stream", "upsert": "true"})
+        old.remove([path])
+
     def save(
         self,
         namespace: str,
@@ -127,7 +181,7 @@ class SupabaseStorage:
         if len(data) > self.max_bytes:
             raise ValueError(f"File exceeds the {self.max_bytes // (1024 * 1024)} MB upload limit")
         suffix = Path(original_filename or "").suffix.lower()
-        if suffix not in ALLOWED_EXTENSIONS:
+        if suffix not in ALLOWED_EXTENSIONS and not namespace.startswith("documents/"):
             raise ValueError(
                 f"Extension '{suffix or '(none)'}' is not allowed; "
                 f"allowed: {sorted(ALLOWED_EXTENSIONS)}"
@@ -136,7 +190,7 @@ class SupabaseStorage:
         relative = PurePosixPath(namespace, stored_name)
         object_path = relative.as_posix()
         content_type_value = content_type or mimetypes.guess_type(original_filename)[0]
-        self.client.storage.from_(self.bucket).upload(
+        self.bucket_for(object_path).upload(
             object_path,
             data,
             {"content-type": content_type_value or "application/octet-stream", "upsert": "true"},
@@ -156,7 +210,7 @@ class SupabaseStorage:
         cache_dir = Path(tempfile.gettempdir()) / "cestos-supabase-cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = cache_dir / f"{uuid.uuid4().hex}-{pure.name}"
-        data = self.client.storage.from_(self.bucket).download(pure.as_posix())
+        data = self.bucket_for(relative_path).download(pure.as_posix())
         if hasattr(data, "read"):
             payload = data.read()
         else:
@@ -166,7 +220,7 @@ class SupabaseStorage:
 
     def delete(self, relative_path: str) -> None:
         try:
-            self.client.storage.from_(self.bucket).remove([relative_path])
+            self.bucket_for(relative_path).remove([relative_path])
         except Exception:
             return
 

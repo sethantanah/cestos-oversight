@@ -595,7 +595,62 @@ class AssetService:
                 .order_by(AssetAssignment.assigned_at.desc())
             )
         ).all()
-        return [AssetAssignmentRead.model_validate(row) for row in rows]
+        if not rows:
+            return []
+        project_ids = {r.project_id for r in rows if r.project_id}
+        location_ids = {r.location_id for r in rows if r.location_id}
+        emp_ids = {r.responsible_employee_id for r in rows if r.responsible_employee_id} | {
+            r.primary_operator_id for r in rows if r.primary_operator_id
+        }
+
+        projects = (
+            {p.id: p.name for p in (await self.session.scalars(select(Project).where(Project.id.in_(project_ids)))).all()}
+            if project_ids
+            else {}
+        )
+        locations = (
+            {l.id: l.name for l in (await self.session.scalars(select(Location).where(Location.id.in_(location_ids)))).all()}
+            if location_ids
+            else {}
+        )
+        employees = (
+            {
+                e.id: f"{e.first_name} {e.last_name}".strip() or e.email
+                for e in (await self.session.scalars(select(Employee).where(Employee.id.in_(emp_ids)))).all()
+            }
+            if emp_ids
+            else {}
+        )
+
+        res = []
+        for row in rows:
+            dto = AssetAssignmentRead.model_validate(row)
+            dto.project_name = projects.get(row.project_id)
+            dto.location_name = locations.get(row.location_id) if row.location_id else None
+            dto.responsible_employee_name = employees.get(row.responsible_employee_id) if row.responsible_employee_id else None
+            dto.primary_operator_name = employees.get(row.primary_operator_id) if row.primary_operator_id else None
+            res.append(dto)
+        return res
+
+    async def _enrich_assignment_read(self, assignment: AssetAssignment | None) -> AssetAssignmentRead | None:
+        if assignment is None:
+            return None
+        dto = AssetAssignmentRead.model_validate(assignment)
+        if assignment.project_id:
+            proj = await self.session.get(Project, assignment.project_id)
+            if proj:
+                dto.project_name = proj.name
+        if assignment.location_id:
+            loc = await self.session.get(Location, assignment.location_id)
+            if loc:
+                dto.location_name = loc.name
+        emp_ids = [eid for eid in (assignment.responsible_employee_id, assignment.primary_operator_id) if eid]
+        if emp_ids:
+            emps = (await self.session.scalars(select(Employee).where(Employee.id.in_(emp_ids)))).all()
+            emp_map = {e.id: f"{e.first_name} {e.last_name}".strip() or e.email for e in emps}
+            dto.responsible_employee_name = emp_map.get(assignment.responsible_employee_id)
+            dto.primary_operator_name = emp_map.get(assignment.primary_operator_id)
+        return dto
 
     async def create_assignment(
         self,
@@ -651,7 +706,10 @@ class AssetService:
                     )
                 ).first()
                 if conflict is not None:
-                    raise ConflictError("Asset already has an active assignment; return it first")
+                    conflict.status = AssignmentStatus.COMPLETED
+                    conflict.returned_at = body.assigned_at or datetime.now(UTC)
+                    conflict.updated_by_id = self.actor.id
+                    conflict.updated_at = datetime.now(UTC)
             number = await next_business_number(
                 self.session, self.actor.organization_id, "assignment"
             )
@@ -688,7 +746,8 @@ class AssetService:
                 **_meta(request),
             )
             await self.session.commit()
-            return AssetAssignmentRead.model_validate(assignment)
+            res = await self._enrich_assignment_read(assignment)
+            return res if res is not None else AssetAssignmentRead.model_validate(assignment)
         except (NotFoundError, ConflictError, ValidationError):
             await self.session.rollback()
             raise
@@ -776,7 +835,8 @@ class AssetService:
                 **_meta(request),
             )
             await self.session.commit()
-            return AssetAssignmentRead.model_validate(assignment)
+            res = await self._enrich_assignment_read(assignment)
+            return res if res is not None else AssetAssignmentRead.model_validate(assignment)
         except (NotFoundError, ConflictError, ValidationError):
             await self.session.rollback()
             raise
@@ -1230,6 +1290,179 @@ class AssetService:
         ).all()
         return rows
 
+    async def get_expiring_documents_and_deadlines(self, days: int = 60) -> list[dict]:
+        """Get comprehensive equipment expiring documents, licences, warranties, and maintenance deadlines"""
+        from datetime import timedelta
+        today = datetime.now(UTC).date()
+        cutoff_date = today + timedelta(days=days)
+        results = []
+
+        # 1. Registrations
+        reg_stmt = (
+            organization_query(AssetRegistration, self.actor.organization_id)
+            .where(
+                AssetRegistration.expiry_date <= cutoff_date,
+                AssetRegistration.status == "ACTIVE",
+            )
+            .order_by(AssetRegistration.expiry_date)
+        )
+        regs = (await self.session.scalars(reg_stmt)).all()
+        asset_ids = set()
+        for r in regs:
+            if r.asset_id:
+                asset_ids.add(r.asset_id)
+
+        # 2. Insurances
+        ins_stmt = (
+            organization_query(AssetInsurance, self.actor.organization_id)
+            .where(
+                AssetInsurance.expiry_date <= cutoff_date,
+                AssetInsurance.status == "ACTIVE",
+            )
+            .order_by(AssetInsurance.expiry_date)
+        )
+        ins_list = (await self.session.scalars(ins_stmt)).all()
+        for i in ins_list:
+            if i.asset_id:
+                asset_ids.add(i.asset_id)
+
+        # 3. Assets with direct warranty or insurance dates
+        asset_stmt = (
+            organization_query(Asset, self.actor.organization_id)
+            .where(
+                Asset.archived_at.is_(None),
+                (
+                    (Asset.insurance_expiry_date <= cutoff_date) |
+                    (Asset.warranty_expiry_date <= cutoff_date)
+                )
+            )
+        )
+        assets_exp = (await self.session.scalars(asset_stmt)).all()
+        asset_map = {a.id: a for a in assets_exp}
+
+        missing_ids = asset_ids - set(asset_map.keys())
+        if missing_ids:
+            missing_assets = (await self.session.scalars(
+                organization_query(Asset, self.actor.organization_id).where(Asset.id.in_(missing_ids))
+            )).all()
+            for ma in missing_assets:
+                asset_map[ma.id] = ma
+
+        # Format Registrations
+        for r in regs:
+            ast = asset_map.get(r.asset_id)
+            days_left = (r.expiry_date - today).days if r.expiry_date else 999
+            urgency = "EXPIRED" if days_left < 0 else ("CRITICAL" if days_left <= 7 else ("WARNING" if days_left <= 30 else "UPCOMING"))
+            results.append({
+                "id": f"reg-{r.id}",
+                "asset_id": str(r.asset_id) if r.asset_id else None,
+                "asset_name": ast.name if ast else "Equipment Asset",
+                "asset_number": ast.asset_number if ast else "",
+                "category": "REGISTRATION",
+                "document_type": r.registration_type or "Road License / Permit",
+                "reference_number": r.registration_number or "N/A",
+                "provider_or_authority": r.issuing_authority or "Transport Authority",
+                "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None,
+                "days_remaining": days_left,
+                "urgency": urgency,
+                "status": r.status,
+                "notes": r.notes or f"Registration/license permit for asset {ast.name if ast else ''}",
+            })
+
+        # Format Insurances
+        for i in ins_list:
+            ast = asset_map.get(i.asset_id)
+            days_left = (i.expiry_date - today).days if i.expiry_date else 999
+            urgency = "EXPIRED" if days_left < 0 else ("CRITICAL" if days_left <= 7 else ("WARNING" if days_left <= 30 else "UPCOMING"))
+            results.append({
+                "id": f"ins-{i.id}",
+                "asset_id": str(i.asset_id) if i.asset_id else None,
+                "asset_name": ast.name if ast else "Equipment Asset",
+                "asset_number": ast.asset_number if ast else "",
+                "category": "INSURANCE",
+                "document_type": i.coverage_type or "Equipment Insurance Policy",
+                "reference_number": i.policy_number or "N/A",
+                "provider_or_authority": i.provider or "Insurance Company",
+                "expiry_date": i.expiry_date.isoformat() if i.expiry_date else None,
+                "days_remaining": days_left,
+                "urgency": urgency,
+                "status": i.status,
+                "notes": i.notes or f"Insurance policy for asset {ast.name if ast else ''}",
+            })
+
+        # Direct asset insurance & warranty fallback if no specific record added
+        for ast in assets_exp:
+            if ast.insurance_expiry_date and not any(r["asset_id"] == str(ast.id) and r["category"] == "INSURANCE" for r in results):
+                days_left = (ast.insurance_expiry_date - today).days
+                urgency = "EXPIRED" if days_left < 0 else ("CRITICAL" if days_left <= 7 else ("WARNING" if days_left <= 30 else "UPCOMING"))
+                results.append({
+                    "id": f"ast-ins-{ast.id}",
+                    "asset_id": str(ast.id),
+                    "asset_name": ast.name,
+                    "asset_number": ast.asset_number,
+                    "category": "INSURANCE",
+                    "document_type": "Vehicle / Machinery Insurance",
+                    "reference_number": f"INS-{ast.asset_number}",
+                    "provider_or_authority": "Insurance Provider",
+                    "expiry_date": ast.insurance_expiry_date.isoformat(),
+                    "days_remaining": days_left,
+                    "urgency": urgency,
+                    "status": "ACTIVE",
+                    "notes": f"Primary insurance expiry for {ast.name}",
+                })
+            if ast.warranty_expiry_date:
+                days_left = (ast.warranty_expiry_date - today).days
+                urgency = "EXPIRED" if days_left < 0 else ("CRITICAL" if days_left <= 7 else ("WARNING" if days_left <= 30 else "UPCOMING"))
+                results.append({
+                    "id": f"ast-war-{ast.id}",
+                    "asset_id": str(ast.id),
+                    "asset_name": ast.name,
+                    "asset_number": ast.asset_number,
+                    "category": "WARRANTY",
+                    "document_type": "Manufacturer Warranty",
+                    "reference_number": f"WAR-{ast.serial_number or ast.asset_number}",
+                    "provider_or_authority": ast.manufacturer or "OEM Manufacturer",
+                    "expiry_date": ast.warranty_expiry_date.isoformat(),
+                    "days_remaining": days_left,
+                    "urgency": urgency,
+                    "status": "ACTIVE",
+                    "notes": f"Manufacturer warranty coverage for {ast.name}",
+                })
+
+        # 4. Critical Defects & Maintenance Deadlines
+        defect_stmt = (
+            organization_query(AssetDefect, self.actor.organization_id)
+            .where(
+                AssetDefect.severity.in_(["CRITICAL", "HIGH"]),
+                AssetDefect.status != "RESOLVED",
+            )
+        )
+        defects = (await self.session.scalars(defect_stmt)).all()
+        for d in defects:
+            ast = asset_map.get(d.asset_id)
+            if not ast and d.asset_id:
+                ast = (await self.session.scalars(
+                    organization_query(Asset, self.actor.organization_id).where(Asset.id == d.asset_id)
+                )).first()
+            results.append({
+                "id": f"def-{d.id}",
+                "asset_id": str(d.asset_id) if d.asset_id else None,
+                "asset_name": ast.name if ast else "Equipment Asset",
+                "asset_number": ast.asset_number if ast else "",
+                "category": "CRITICAL_DEFECT",
+                "document_type": f"Defect: {d.severity} Priority",
+                "reference_number": f"DEF-{str(d.id)[:8]}",
+                "provider_or_authority": "Maintenance / Fleet Ops",
+                "expiry_date": (today + timedelta(days=1)).isoformat() if d.severity == "CRITICAL" else (today + timedelta(days=3)).isoformat(),
+                "days_remaining": 1 if d.severity == "CRITICAL" else 3,
+                "urgency": "CRITICAL",
+                "status": d.status,
+                "notes": d.description or f"Open {d.severity} defect requiring resolution",
+            })
+
+        results.sort(key=lambda x: x["days_remaining"])
+        return results
+
     # ---- inspections ----
 
     async def list_inspections(
@@ -1376,6 +1609,22 @@ class AssetService:
         except Exception:
             await self.session.rollback()
             raise
+
+    async def update_defect(
+        self,
+        asset_id: uuid.UUID,
+        defect_id: uuid.UUID,
+        payload: dict,
+    ):
+        """Update an existing defect"""
+        await self._get_or_404(asset_id)
+        defect = await self.ref(AssetDefect, defect_id, asset_id)
+        for field in ("severity", "description", "status", "notes"):
+            if field in payload and payload[field] is not None:
+                setattr(defect, field, payload[field])
+        await self.session.commit()
+        return defect
+
 
     async def resolve_defect(
         self,

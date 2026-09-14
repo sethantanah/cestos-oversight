@@ -720,6 +720,30 @@ async def download_employee_document(
     return FileResponse(path, media_type=media_type, filename=filename)
 
 
+@documents_router.get("/{document_id}/view")
+@documents_router.get("/{document_id}/view/{filename:path}")
+@documents_router.get("/{document_id}/file/{filename:path}")
+async def view_employee_document(
+    employee_id: uuid.UUID,
+    document_id: uuid.UUID,
+    filename: str | None = None,
+    actor: User = Depends(require_permission("employees.documents.read")),
+    session: AsyncSession = Depends(get_session),
+    storage: LocalStorage = Depends(request_storage),
+) -> FileResponse:
+    path, media_type, file_name = await DocumentService(session, actor).download(
+        employee_id, document_id, storage
+    )
+    import mimetypes
+    guessed_type, _ = mimetypes.guess_type(file_name)
+    mtype = media_type if media_type and media_type != "application/octet-stream" else (guessed_type or "application/pdf")
+    return FileResponse(
+        path,
+        media_type=mtype,
+        headers={"Content-Disposition": f'inline; filename="{file_name}"', "Cache-Control": "private, max-age=3600"},
+    )
+
+
 @documents_router.get("/expiring", response_model=list[DocumentExpiringRead])
 async def expiring_documents(
     days: int = Query(30, ge=1, le=365),
@@ -1132,6 +1156,15 @@ async def list_leave_requests(
     return await LeaveRequestService(session, actor).list(employee_id)
 
 
+@router.get("/leave-requests/all", response_model=list[LeaveRequestRead])
+async def list_all_leave_requests(
+    status: str | None = Query(None),
+    actor: User = Depends(require_permission("employees.leave.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Sequence[LeaveRequestRead]:
+    return await LeaveRequestService(session, actor).list_all(status)
+
+
 @router.patch("/{leave_request_id}/approve", response_model=LeaveRequestRead)
 async def approve_leave_request(
     leave_request_id: uuid.UUID,
@@ -1160,3 +1193,4 @@ async def reject_leave_request(
         request,
     )
     return leave
+

@@ -24,7 +24,9 @@ class UserRepository:
     async def by_email(self, email: str) -> User | None:
         return (
             await self.session.scalars(
-                organization_query(User, self.organization_id).where(User.email == email.lower())
+                organization_query(User, self.organization_id)
+                .where(User.email == email.lower())
+                .options(selectinload(User.roles))
             )
         ).one_or_none()
 
@@ -32,6 +34,9 @@ class UserRepository:
         query = organization_query(User, self.organization_id)
         total = await self.session.scalar(select(func.count()).select_from(query.subquery()))
         rows = await self.session.scalars(
-            query.order_by(User.created_at, User.id).offset((page - 1) * page_size).limit(page_size)
+            query.options(selectinload(User.roles))
+            .order_by(User.created_at, User.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         )
         return list(rows), total or 0

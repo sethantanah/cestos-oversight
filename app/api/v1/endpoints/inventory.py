@@ -5,15 +5,18 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_active_user
+from app.core.dependencies import get_current_active_user, request_storage
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.storage import LocalStorage
 from app.db.session import get_session
 from app.models import Asset, Employee, Location, Project, User
 from app.models import inventory as m
+from app.models.operational_logs import AssetLogFile
 from app.schemas import inventory as schemas
 from app.services.inventory import DOCUMENTS, MASTERS, InventoryService
 from app.services.inventory_queries import InventoryQueries
@@ -30,6 +33,207 @@ def permission(code: str) -> Any:
         return actor
 
     return dependency
+
+
+@router.get("/stats")
+async def get_inventory_stats(
+    store_id: uuid.UUID | None = Query(None),
+    category_id: uuid.UUID | None = Query(None),
+    supplier_id: uuid.UUID | None = Query(None),
+    project_id: uuid.UUID | None = Query(None),
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    from datetime import UTC, datetime, timedelta
+    from sqlalchemy import func, select
+    from app.models import Project
+    from app.models.inventory import (
+        InventoryBalance,
+        InventoryCategory,
+        InventoryIssue,
+        InventoryIssueItem,
+        InventoryItem,
+        InventoryStockPolicy,
+    )
+
+    # 1. Consumption by Project (Last 30 days — total value issued)
+    thirty_days_ago = datetime.now(UTC) - timedelta(days=30)
+
+    issue_stmt = (
+        select(
+            func.coalesce(Project.name, "General Operations").label("project"),
+            func.coalesce(
+                func.sum(InventoryIssueItem.total_cost),
+                func.sum(InventoryIssueItem.quantity * func.coalesce(InventoryIssueItem.unit_cost, 0)),
+                0,
+            ).label("value"),
+        )
+        .join(InventoryIssue, InventoryIssueItem.document_id == InventoryIssue.id)
+        .outerjoin(Project, InventoryIssue.project_id == Project.id)
+        .where(
+            InventoryIssue.organization_id == actor.organization_id,
+            InventoryIssue.transaction_date >= thirty_days_ago,
+        )
+    )
+    if store_id:
+        issue_stmt = issue_stmt.where(InventoryIssue.store_id == store_id)
+    if project_id:
+        issue_stmt = issue_stmt.where(InventoryIssue.project_id == project_id)
+
+    issue_stmt = issue_stmt.group_by(Project.name, Project.id).order_by(
+        func.coalesce(
+            func.sum(InventoryIssueItem.total_cost),
+            func.sum(InventoryIssueItem.quantity * func.coalesce(InventoryIssueItem.unit_cost, 0)),
+            0,
+        ).desc()
+    )
+    issue_rows = (await session.execute(issue_stmt)).all()
+    consumption_by_project = [
+        {"project": str(r.project), "value": float(r.value or 0)} for r in issue_rows
+    ]
+
+    # Fallback to project inventory policies if no issue transactions exist yet
+    if not consumption_by_project:
+        proj_stock_stmt = (
+            select(
+                Project.name.label("project"),
+                func.coalesce(
+                    func.sum(
+                        InventoryItem.standard_unit_cost
+                        * func.coalesce(InventoryStockPolicy.minimum_stock_level, 1)
+                    ),
+                    0,
+                ).label("value"),
+            )
+            .select_from(Project)
+            .where(Project.organization_id == actor.organization_id, Project.archived_at.is_(None))
+        )
+        if project_id:
+            proj_stock_stmt = proj_stock_stmt.where(Project.id == project_id)
+        proj_stock_stmt = proj_stock_stmt.group_by(Project.name, Project.id).limit(5)
+        p_rows = (await session.execute(proj_stock_stmt)).all()
+        consumption_by_project = [
+            {"project": str(r.project), "value": float(r.value or 0)} for r in p_rows
+        ]
+
+    # 2. Inventory Value by Category (Current stock valuation breakdown)
+    cat_stmt = (
+        select(
+            InventoryCategory.name.label("name"),
+            func.coalesce(func.sum(InventoryBalance.inventory_value), 0).label("value"),
+        )
+        .join(InventoryItem, InventoryBalance.item_id == InventoryItem.id)
+        .join(InventoryCategory, InventoryItem.category_id == InventoryCategory.id)
+        .where(
+            InventoryCategory.organization_id == actor.organization_id,
+            InventoryCategory.archived_at.is_(None),
+            InventoryItem.archived_at.is_(None),
+        )
+    )
+    if category_id:
+        cat_stmt = cat_stmt.where(InventoryCategory.id == category_id)
+    if supplier_id:
+        cat_stmt = cat_stmt.where(InventoryItem.preferred_supplier_id == supplier_id)
+    if store_id:
+        cat_stmt = cat_stmt.where(InventoryBalance.store_id == store_id)
+
+    cat_stmt = cat_stmt.group_by(InventoryCategory.name, InventoryCategory.id).order_by(
+        func.coalesce(func.sum(InventoryBalance.inventory_value), 0).desc()
+    )
+    cat_rows = (await session.execute(cat_stmt)).all()
+    value_by_category = [
+        {"name": str(r.name), "value": float(r.value or 0)}
+        for r in cat_rows
+        if r.value and float(r.value) > 0
+    ]
+
+    # Fallback to stock policy standard cost calculation if balances yield empty list
+    if not value_by_category:
+        fallback_cat_stmt = (
+            select(
+                InventoryCategory.name.label("name"),
+                func.coalesce(
+                    func.sum(
+                        InventoryItem.standard_unit_cost
+                        * func.coalesce(InventoryStockPolicy.minimum_stock_level, 1)
+                    ),
+                    0,
+                ).label("value"),
+            )
+            .join(InventoryItem, InventoryItem.category_id == InventoryCategory.id)
+            .outerjoin(InventoryStockPolicy, InventoryStockPolicy.item_id == InventoryItem.id)
+            .where(
+                InventoryCategory.organization_id == actor.organization_id,
+                InventoryCategory.archived_at.is_(None),
+                InventoryItem.archived_at.is_(None),
+            )
+        )
+        if category_id:
+            fallback_cat_stmt = fallback_cat_stmt.where(InventoryCategory.id == category_id)
+        if supplier_id:
+            fallback_cat_stmt = fallback_cat_stmt.where(InventoryItem.preferred_supplier_id == supplier_id)
+        if store_id:
+            fallback_cat_stmt = fallback_cat_stmt.where(InventoryStockPolicy.store_id == store_id)
+        fallback_cat_stmt = fallback_cat_stmt.group_by(InventoryCategory.name, InventoryCategory.id).order_by(
+            func.coalesce(
+                func.sum(
+                    InventoryItem.standard_unit_cost
+                    * func.coalesce(InventoryStockPolicy.minimum_stock_level, 1)
+                ),
+                0,
+            ).desc()
+        )
+        cat_rows = (await session.execute(fallback_cat_stmt)).all()
+        value_by_category = [
+            {"name": str(r.name), "value": float(r.value or 0)}
+            for r in cat_rows
+            if r.value and float(r.value) > 0
+        ]
+
+    # 3. Consumption Trend over time
+    trend_stmt = (
+        select(
+            func.date(InventoryIssue.transaction_date).label("date"),
+            func.coalesce(Project.name, "General Operations").label("project"),
+            func.coalesce(
+                func.sum(InventoryIssueItem.total_cost),
+                func.sum(InventoryIssueItem.quantity * func.coalesce(InventoryIssueItem.unit_cost, 0)),
+                0,
+            ).label("amount"),
+        )
+        .join(InventoryIssue, InventoryIssueItem.document_id == InventoryIssue.id)
+        .outerjoin(Project, InventoryIssue.project_id == Project.id)
+        .where(
+            InventoryIssue.organization_id == actor.organization_id,
+            InventoryIssue.transaction_date >= thirty_days_ago,
+        )
+    )
+    if store_id:
+        trend_stmt = trend_stmt.where(InventoryIssue.store_id == store_id)
+    if project_id:
+        trend_stmt = trend_stmt.where(InventoryIssue.project_id == project_id)
+
+    trend_stmt = trend_stmt.group_by(
+        func.date(InventoryIssue.transaction_date),
+        Project.name,
+        Project.id,
+    ).order_by(func.date(InventoryIssue.transaction_date).asc())
+
+    trend_rows = (await session.execute(trend_stmt)).all()
+    trend_map: dict[str, dict[str, Any]] = {}
+    for r in trend_rows:
+        d_str = r.date.strftime("%b %d") if hasattr(r.date, "strftime") else str(r.date)
+        if d_str not in trend_map:
+            trend_map[d_str] = {"date": d_str}
+        trend_map[d_str][str(r.project)] = float(r.amount or 0)
+
+    consumption_trend = list(trend_map.values())
+
+    return {
+        "consumption_by_project": consumption_by_project,
+        "value_by_category": value_by_category,
+        "consumption_trend": consumption_trend,
+    }
 
 
 def filters(
@@ -263,6 +467,225 @@ async def store_bin_create(
     if body.store_id != identifier:
         raise ValidationError("Store does not match URL")
     return await InventoryService(session, actor).master_save("bins", body)
+
+
+# ---- Store & Item Attachments / Media ----
+
+
+@router.get("/stores/{identifier}/files")
+async def store_files(
+    identifier: uuid.UUID,
+    actor: User = Depends(permission("inventory.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = InventoryQueries(session, actor)
+    await service.ref(m.InventoryStore, identifier)
+    rows = (
+        await session.scalars(
+            select(AssetLogFile)
+            .where(
+                AssetLogFile.organization_id == actor.organization_id,
+                AssetLogFile.log_type == "STORE",
+                AssetLogFile.log_id == identifier,
+            )
+            .order_by(AssetLogFile.created_at.desc())
+        )
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "title": r.title,
+            "file_name": r.file_name,
+            "mime_type": r.mime_type,
+            "size_bytes": r.size_bytes,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/stores/{identifier}/files", status_code=201)
+async def store_file_upload(
+    identifier: uuid.UUID,
+    file: UploadFile = File(...),
+    title: str | None = Form(None),
+    actor: User = Depends(permission("inventory.catalog.manage")),
+    session: AsyncSession = Depends(get_session),
+    storage: LocalStorage = Depends(request_storage),
+) -> Any:
+    service = InventoryQueries(session, actor)
+    await service.ref(m.InventoryStore, identifier)
+    data = await file.read(storage.max_bytes + 1)
+    stored = storage.save("stores", data, file.filename, file.content_type)
+    row = AssetLogFile(
+        organization_id=actor.organization_id,
+        asset_id=identifier,
+        log_type="STORE",
+        log_id=identifier,
+        title=title or file.filename,
+        storage_path=stored.relative_path,
+        file_name=stored.filename,
+        mime_type=stored.mime_type,
+        size_bytes=stored.size_bytes,
+        created_by_id=actor.id,
+        updated_by_id=actor.id,
+    )
+    session.add(row)
+    await session.commit()
+    return {
+        "id": row.id,
+        "title": row.title,
+        "file_name": row.file_name,
+        "mime_type": row.mime_type,
+        "size_bytes": row.size_bytes,
+    }
+
+
+@router.get("/store-files/{file_id}/download")
+async def download_store_file(
+    file_id: uuid.UUID,
+    actor: User = Depends(permission("inventory.read")),
+    session: AsyncSession = Depends(get_session),
+    storage: LocalStorage = Depends(request_storage),
+) -> FileResponse:
+    row = (
+        await session.scalars(
+            select(AssetLogFile).where(
+                AssetLogFile.id == file_id,
+                AssetLogFile.organization_id == actor.organization_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise NotFoundError("File not found")
+    path = storage.resolve(row.storage_path)
+    return FileResponse(
+        path, media_type=row.mime_type or "application/octet-stream", filename=row.file_name
+    )
+
+
+@router.get("/items/{identifier}/files")
+async def item_files(
+    identifier: uuid.UUID,
+    actor: User = Depends(permission("inventory.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    service = InventoryQueries(session, actor)
+    await service.ref(m.InventoryItem, identifier)
+    rows = (
+        await session.scalars(
+            select(AssetLogFile)
+            .where(
+                AssetLogFile.organization_id == actor.organization_id,
+                AssetLogFile.log_type == "ITEM",
+                AssetLogFile.log_id == identifier,
+            )
+            .order_by(AssetLogFile.created_at.desc())
+        )
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "title": r.title,
+            "file_name": r.file_name,
+            "mime_type": r.mime_type,
+            "size_bytes": r.size_bytes,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/items/{identifier}/files", status_code=201)
+async def item_file_upload(
+    identifier: uuid.UUID,
+    file: UploadFile = File(...),
+    title: str | None = Form(None),
+    actor: User = Depends(permission("inventory.catalog.manage")),
+    session: AsyncSession = Depends(get_session),
+    storage: LocalStorage = Depends(request_storage),
+) -> Any:
+    service = InventoryQueries(session, actor)
+    await service.ref(m.InventoryItem, identifier)
+    data = await file.read(storage.max_bytes + 1)
+    stored = storage.save("items", data, file.filename, file.content_type)
+    row = AssetLogFile(
+        organization_id=actor.organization_id,
+        asset_id=identifier,
+        log_type="ITEM",
+        log_id=identifier,
+        title=title or file.filename,
+        storage_path=stored.relative_path,
+        file_name=stored.filename,
+        mime_type=stored.mime_type,
+        size_bytes=stored.size_bytes,
+        created_by_id=actor.id,
+        updated_by_id=actor.id,
+    )
+    session.add(row)
+    await session.commit()
+    return {
+        "id": row.id,
+        "title": row.title,
+        "file_name": row.file_name,
+        "mime_type": row.mime_type,
+        "size_bytes": row.size_bytes,
+    }
+
+
+@router.post("/items/{identifier}/photo", status_code=200)
+async def item_photo_upload(
+    identifier: uuid.UUID,
+    file: UploadFile = File(...),
+    actor: User = Depends(permission("inventory.catalog.manage")),
+    session: AsyncSession = Depends(get_session),
+    storage: LocalStorage = Depends(request_storage),
+) -> Any:
+    service = InventoryQueries(session, actor)
+    item = await service.ref(m.InventoryItem, identifier, True)
+    data = await file.read(storage.max_bytes + 1)
+    stored = storage.save("item-photos", data, file.filename, file.content_type)
+    row = AssetLogFile(
+        organization_id=actor.organization_id,
+        asset_id=identifier,
+        log_type="ITEM_PHOTO",
+        log_id=identifier,
+        title=file.filename,
+        storage_path=stored.relative_path,
+        file_name=stored.filename,
+        mime_type=stored.mime_type,
+        size_bytes=stored.size_bytes,
+        created_by_id=actor.id,
+        updated_by_id=actor.id,
+    )
+    session.add(row)
+    await session.flush()
+    item.image_url = f"/api/v1/inventory/item-files/{row.id}/download"
+    await session.commit()
+    return {"image_url": item.image_url}
+
+
+@router.get("/item-files/{file_id}/download")
+async def download_item_file(
+    file_id: uuid.UUID,
+    actor: User = Depends(permission("inventory.read")),
+    session: AsyncSession = Depends(get_session),
+    storage: LocalStorage = Depends(request_storage),
+) -> FileResponse:
+    row = (
+        await session.scalars(
+            select(AssetLogFile).where(
+                AssetLogFile.id == file_id,
+                AssetLogFile.organization_id == actor.organization_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise NotFoundError("File not found")
+    path = storage.resolve(row.storage_path)
+    return FileResponse(
+        path, media_type=row.mime_type or "application/octet-stream", filename=row.file_name
+    )
 
 
 def master_routes(kind: str, model: Any) -> None:
@@ -596,6 +1019,7 @@ async def import_preview(
     file: UploadFile = File(...),
     actor: User = Depends(permission("inventory.admin")),
     session: AsyncSession = Depends(get_session),
+    storage: LocalStorage = Depends(request_storage),
 ) -> Any:
     from app.services.inventory_imports import InventoryImports
 
@@ -604,9 +1028,43 @@ async def import_preview(
     data = await file.read(2 * 1024 * 1024 + 1)
     if len(data) > 2 * 1024 * 1024:
         raise ValidationError("CSV file exceeds 2 MB")
-    return await InventoryImports(session, actor).preview(
+    result = await InventoryImports(session, actor).preview(
         kind, data, file.filename or "inventory.csv"
     )
+
+    from starlette.concurrency import run_in_threadpool
+    from app.models.document_library import LibraryDocument
+
+    stored = await run_in_threadpool(
+        storage.save,
+        f"documents/{actor.organization_id}/imports",
+        data,
+        file.filename or "inventory.csv",
+        "text/csv",
+    )
+    try:
+        session.add(
+            LibraryDocument(
+                organization_id=actor.organization_id,
+                source_type="inventory_imports",
+                source_id=result["id"],
+                title=file.filename or "Inventory import",
+                category="Inventory",
+                tags=["import", kind],
+                storage_path=stored.relative_path,
+                file_name=stored.filename,
+                mime_type=stored.mime_type,
+                size_bytes=stored.size_bytes,
+                owner_id=actor.id,
+                visibility="PRIVATE",
+            )
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        await run_in_threadpool(storage.delete, stored.relative_path)
+        raise
+    return result
 
 
 @router.post("/imports/{identifier}/confirm")
@@ -704,4 +1162,17 @@ async def export(
         stream(),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="inventory-report.csv"'},
+    )
+
+
+@operational_router.get("/suppliers")
+async def list_suppliers_alias(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: str | None = None,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    return await InventoryQueries(session, actor).listing(
+        "suppliers", {"page": page, "page_size": page_size, "search": search}
     )

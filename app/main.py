@@ -18,6 +18,8 @@ from app.core.storage import build_storage
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    from app.services import document_registry  # noqa: F401
+
     settings = settings or get_settings()
     configure_logging(settings.log_level)
     engine = build_engine(settings)
@@ -26,6 +28,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             await wait_for_database(engine)
+            try:
+                async with engine.begin() as conn:
+                    from app.models import Base
+                    await conn.run_sync(Base.metadata.create_all)
+            except Exception:
+                pass
+            from app.services.document_index import worker
+            from app.services.document_registry import backfill_registry
+
+            try:
+                async with app.state.session_factory() as catalog_session:
+                    await backfill_registry(catalog_session)
+                    if hasattr(app.state.storage, "ensure_private"):
+                        from sqlalchemy import select
+                        from starlette.concurrency import run_in_threadpool
+
+                        from app.models.document_library import LibraryDocument
+
+                        paths = (
+                            await catalog_session.scalars(select(LibraryDocument.storage_path))
+                        ).all()
+                        for document_path in paths:
+                            await run_in_threadpool(app.state.storage.ensure_private, document_path)
+            except Exception as exc:
+                import structlog
+
+                structlog.get_logger().warning("startup_catalog_init_failed", error=str(exc))
+            indexing_task = asyncio.create_task(worker(app)) if settings.app_env != "test" else None
             from app.services.mail import scheduler
 
             task = (
@@ -36,6 +66,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 yield
             finally:
+                if indexing_task:
+                    indexing_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await indexing_task
                 if task:
                     task.cancel()
                     with suppress(asyncio.CancelledError):
@@ -59,9 +93,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=False,
-        allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
         expose_headers=["X-Request-ID"],
     )
     install_exception_handlers(app)

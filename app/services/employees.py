@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import Request
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -620,16 +621,22 @@ class EmployeeService:
     async def update(
         self, employee_id: uuid.UUID, body: EmployeeUpdate, request: Request | None = None
     ) -> EmployeeRead:
+
         try:
             employee = await self._get_or_404(employee_id)
             data = body.model_dump(exclude_unset=True)
-            if employee.user_id and any(
-                key in data and data[key] != getattr(employee, key)
-                for key in ("work_email", "personal_email")
-            ):
-                raise ConflictError(
-                    "Linked account emails must be changed through the superadmin account workflow"
-                )
+            email_changed = False
+
+
+
+            if "work_email" in data and data["work_email"] is not None:
+                data["work_email"] = str(data["work_email"]).lower().strip()
+                if data["work_email"] != employee.work_email:
+                    email_changed = True
+                await self._check_work_email_unique(data["work_email"], employee.id)
+            if "personal_email" in data and data["personal_email"] is not None:
+                data["personal_email"] = str(data["personal_email"]).lower().strip()
+
             if "supervisor_id" in data and data["supervisor_id"] is not None:
                 if data["supervisor_id"] == employee.id:
                     raise ValidationError("An employee cannot supervise themselves")
@@ -640,11 +647,6 @@ class EmployeeService:
                 data.get("home_location_id", employee.home_location_id),
                 employee.id,
             )
-            if "work_email" in data and data["work_email"] is not None:
-                data["work_email"] = str(data["work_email"]).lower()
-                await self._check_work_email_unique(data["work_email"], employee.id)
-            if "personal_email" in data and data["personal_email"] is not None:
-                data["personal_email"] = str(data["personal_email"]).lower()
             hire = data.get("hire_date", employee.hire_date)
             term = data.get("termination_date", employee.termination_date)
             if hire and term and term < hire:
@@ -658,6 +660,18 @@ class EmployeeService:
             employee.updated_by_id = self.actor.id
             employee.updated_at = datetime.now(UTC)
             await self.session.flush()
+
+            # Synchronize profile email with user account & trigger password reset email
+            from app.services.hr import invalidate_account, link_account
+            if employee.user_id:
+                if email_changed:
+                    user = await self.session.get(User, employee.user_id)
+                    if user:
+                        user.email = employee.work_email
+                        await invalidate_account(self.session, user)
+            else:
+                await link_account(self.session, self.actor, employee)
+
             record_audit(
                 self.session,
                 organization_id=self.actor.organization_id,
@@ -873,6 +887,11 @@ class EmployeeService:
                 entity_id=assignment.id,
                 new_values={
                     "assignment_number": number,
+                    "supervisor_id": str(assignment.supervisor_id)
+                    if assignment.supervisor_id
+                    else None,
+                    "role_on_project": assignment.role_on_project,
+                    "start_date": str(assignment.start_date),
                     "employee_id": str(employee_id),
                     "project_id": str(body.project_id),
                 },
@@ -995,6 +1014,7 @@ class EmployeeService:
                 demobilization_date=data.get("demobilization_date", assignment.demobilization_date),
             )
             await self._check_assignment_refs(merged, assignment.employee_id, assignment.id)
+            previous_values = jsonable_encoder({key: getattr(assignment, key) for key in data})
             for key, value in data.items():
                 setattr(assignment, key, value)
             assignment.updated_by_id = self.actor.id
@@ -1010,7 +1030,14 @@ class EmployeeService:
                 else "employee.assignment_updated",
                 entity_type="employee_assignment",
                 entity_id=assignment.id,
-                new_values={"status": str(data.get("status", assignment.status))},
+                old_values=previous_values,
+                new_values=jsonable_encoder(
+                    {
+                        **data,
+                        "project_id": assignment.project_id,
+                        "employee_id": assignment.employee_id,
+                    }
+                ),
                 **_meta(request),
             )
             await self.session.commit()
@@ -1120,6 +1147,7 @@ class EmployeeService:
                 entity_id=assignment.id,
                 new_values={
                     "assignment_number": number,
+                    "employee_id": str(employee_id),
                     "project_id": str(body.project_id),
                     "from_assignment_id": str(current.id) if current else None,
                 },

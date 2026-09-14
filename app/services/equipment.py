@@ -437,8 +437,13 @@ class EquipmentService(ExistingAssetService):
         eligibility = await self.eligibility(row)
         if eligibility["operational_eligibility"] == "NOT_ELIGIBLE":
             raise ConflictError("Asset is not eligible: " + "; ".join(eligibility["reasons"]))
-        if body.status == AssignmentStatus.ACTIVE and await self.active_assignment(row.id):
-            raise ConflictError("Asset already has an active assignment")
+        if body.status == AssignmentStatus.ACTIVE:
+            active_asgn = await self.active_assignment(row.id)
+            if active_asgn:
+                active_asgn.status = AssignmentStatus.COMPLETED
+                active_asgn.returned_at = body.assigned_at or datetime.now(UTC)
+                active_asgn.updated_by_id = self.actor.id
+                active_asgn.updated_at = datetime.now(UTC)
         if (
             body.starting_meter is not None
             and row.current_meter_reading is not None
@@ -485,12 +490,33 @@ class EquipmentService(ExistingAssetService):
             ),
         )
 
+    async def _enrich_assignment_read(self, assignment: AssetAssignment | None) -> AssetAssignmentRead | None:
+        if assignment is None:
+            return None
+        dto = AssetAssignmentRead.model_validate(assignment)
+        if assignment.project_id:
+            proj = await self.session.get(Project, assignment.project_id)
+            if proj:
+                dto.project_name = proj.name
+        if assignment.location_id:
+            loc = await self.session.get(Location, assignment.location_id)
+            if loc:
+                dto.location_name = loc.name
+        emp_ids = [eid for eid in (assignment.responsible_employee_id, assignment.primary_operator_id) if eid]
+        if emp_ids:
+            emps = (await self.session.scalars(select(Employee).where(Employee.id.in_(emp_ids)))).all()
+            emp_map = {e.id: f"{e.first_name} {e.last_name}".strip() or e.email for e in emps}
+            dto.responsible_employee_name = emp_map.get(assignment.responsible_employee_id)
+            dto.primary_operator_name = emp_map.get(assignment.primary_operator_id)
+        return dto
+
     async def create_assignment(
         self, asset_id: uuid.UUID, body: Any, request: Request | None = None
     ) -> AssetAssignmentRead:
         result = await self._assign(await self.asset(asset_id, True), body)
         await self.commit()
-        return AssetAssignmentRead.model_validate(result)
+        res = await self._enrich_assignment_read(result)
+        return res if res is not None else AssetAssignmentRead.model_validate(result)
 
     async def update_assignment(
         self, assignment_id: uuid.UUID, body: Any, request: Request | None = None
@@ -501,7 +527,8 @@ class EquipmentService(ExistingAssetService):
         data = body.model_dump(exclude_unset=True)
         await self._finish_or_update(row, assignment, data)
         await self.commit()
-        return AssetAssignmentRead.model_validate(assignment)
+        res = await self._enrich_assignment_read(assignment)
+        return res if res is not None else AssetAssignmentRead.model_validate(assignment)
 
     async def _finish_or_update(
         self, row: Asset, assignment: AssetAssignment, data: dict[str, Any]
@@ -522,12 +549,13 @@ class EquipmentService(ExistingAssetService):
             and merged["ending_meter"] < merged["starting_meter"]
         ):
             raise ValidationError("Ending meter cannot precede starting meter")
-        if (
-            new_status == AssignmentStatus.ACTIVE
-            and assignment.status != new_status
-            and await self.active_assignment(row.id)
-        ):
-            raise ConflictError("Asset already has an active assignment")
+        if new_status == AssignmentStatus.ACTIVE and assignment.status != new_status:
+            active_asgn = await self.active_assignment(row.id)
+            if active_asgn and active_asgn.id != assignment.id:
+                active_asgn.status = AssignmentStatus.COMPLETED
+                active_asgn.returned_at = datetime.now(UTC)
+                active_asgn.updated_by_id = self.actor.id
+                active_asgn.updated_at = datetime.now(UTC)
         previous = assignment.status
         if new_status == AssignmentStatus.ACTIVE:
             project = await self.ref(Project, merged["project_id"])
@@ -718,7 +746,65 @@ class EquipmentService(ExistingAssetService):
                 .order_by(model.created_at.desc(), model.id)
             )
         ).all()
-        return [self.public(row) for row in rows]
+        result = [self.public(row) for row in rows]
+        if kind == "location-history" and result:
+            loc_ids = [r["location_id"] for r in result if r.get("location_id")]
+            proj_ids = [r["project_id"] for r in result if r.get("project_id")]
+            user_ids = [r["recorded_by_id"] for r in result if r.get("recorded_by_id")]
+            loc_map = {}
+            if loc_ids:
+                locs = (await self.session.scalars(select(Location).where(Location.id.in_(loc_ids)))).all()
+                for l in locs:
+                    loc_map[l.id] = {
+                        "name": l.name,
+                        "type": str(l.location_type) if getattr(l, "location_type", None) is not None else None,
+                        "latitude": float(l.latitude) if l.latitude is not None else None,
+                        "longitude": float(l.longitude) if l.longitude is not None else None,
+                        "address": l.address,
+                    }
+            proj_map = {}
+            if proj_ids:
+                projs = (await self.session.scalars(select(Project).where(Project.id.in_(proj_ids)))).all()
+                for p in projs:
+                    proj_map[p.id] = p.name
+            user_map = {}
+            if user_ids:
+                users = (await self.session.scalars(select(User).where(User.id.in_(user_ids)))).all()
+                for u in users:
+                    user_map[u.id] = f"{u.first_name} {u.last_name}".strip() or u.email
+            for r in result:
+                l_info = loc_map.get(r.get("location_id")) or {}
+                r["location_name"] = l_info.get("name")
+                r["location_type"] = l_info.get("type")
+                r["latitude"] = l_info.get("latitude")
+                r["longitude"] = l_info.get("longitude")
+                r["address"] = l_info.get("address")
+                r["project_name"] = proj_map.get(r.get("project_id"))
+                r["recorded_by_name"] = user_map.get(r.get("recorded_by_id"))
+        elif kind == "status-history" and result:
+            proj_ids = [r["project_id"] for r in result if r.get("project_id")]
+            loc_ids = [r["location_id"] for r in result if r.get("location_id")]
+            user_ids = [r["changed_by_id"] for r in result if r.get("changed_by_id")]
+            proj_map = {}
+            if proj_ids:
+                projs = (await self.session.scalars(select(Project).where(Project.id.in_(proj_ids)))).all()
+                for p in projs:
+                    proj_map[p.id] = p.name
+            loc_map = {}
+            if loc_ids:
+                locs = (await self.session.scalars(select(Location).where(Location.id.in_(loc_ids)))).all()
+                for l in locs:
+                    loc_map[l.id] = l.name
+            user_map = {}
+            if user_ids:
+                users = (await self.session.scalars(select(User).where(User.id.in_(user_ids)))).all()
+                for u in users:
+                    user_map[u.id] = f"{u.first_name} {u.last_name}".strip() or u.email
+            for r in result:
+                r["project_name"] = proj_map.get(r.get("project_id"))
+                r["location_name"] = loc_map.get(r.get("location_id"))
+                r["changed_by_name"] = user_map.get(r.get("changed_by_id"))
+        return result
 
     async def add_record(self, asset_id: uuid.UUID, kind: str, body: Any) -> dict[str, Any]:
         asset = await self.asset(asset_id, True)

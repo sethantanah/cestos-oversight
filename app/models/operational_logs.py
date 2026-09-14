@@ -54,6 +54,9 @@ class AssetMaintenanceJob(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMix
     cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
     currency: Mapped[str] = mapped_column(String(3))
     completion_notes: Mapped[str | None] = mapped_column(Text)
+    assigned_employee_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    is_recurring: Mapped[bool] = mapped_column(default=False, server_default="false")
+    recurrence_interval_days: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class ProjectRecord(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):

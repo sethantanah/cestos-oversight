@@ -54,7 +54,14 @@ class ProjectService:
         return project
 
     async def get(self, project_id: uuid.UUID) -> ProjectRead:
-        return ProjectRead.model_validate(await self._get_or_404(project_id))
+        from app.core.dependencies import scoped_roles
+
+        project = await self._get_or_404(project_id)
+        res = ProjectRead.model_validate(project)
+        codes = {p.code for r in scoped_roles(self.actor) for p in r.permissions}
+        if not self.actor.is_superuser and "projects.financials.read" not in codes:
+            res.contract_value = None
+        return res
 
     async def list(
         self,
@@ -87,6 +94,29 @@ class ProjectService:
             query = query.where(Project.start_date >= start_date_from)
         if start_date_to is not None:
             query = query.where(Project.start_date <= start_date_to)
+        from app.core.dependencies import scoped_roles
+
+        codes = {p.code for r in scoped_roles(self.actor) for p in r.permissions}
+        if not self.actor.is_superuser and "projects.read_all" not in codes:
+            emp_id = await self.session.scalar(
+                select(Employee.id).where(
+                    Employee.user_id == self.actor.id,
+                    Employee.organization_id == self.actor.organization_id,
+                )
+            )
+            if emp_id:
+                assigned_pids = select(EmployeeAssignment.project_id).where(
+                    EmployeeAssignment.employee_id == emp_id,
+                    EmployeeAssignment.organization_id == self.actor.organization_id,
+                    EmployeeAssignment.status == AssignmentStatus.ACTIVE,
+                )
+                query = query.where(
+                    or_(
+                        Project.id.in_(assigned_pids),
+                        Project.project_manager_id == emp_id,
+                    )
+                )
+
         total = await self.session.scalar(select(func.count()).select_from(query.subquery()))
         rows = (
             await self.session.scalars(
@@ -96,6 +126,9 @@ class ProjectService:
             )
         ).all()
         items = [ProjectRead.model_validate(row) for row in rows]
+        if not self.actor.is_superuser and "projects.financials.read" not in codes:
+            for item in items:
+                item.contract_value = None
         return Page(
             items=items,
             total=total or 0,

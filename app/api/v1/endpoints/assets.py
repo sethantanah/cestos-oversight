@@ -77,6 +77,212 @@ async def create_asset(
     return await AssetService(session, actor).create(body, request)
 
 
+@router.get("/dashboard-summary")
+async def fleet_dashboard_summary(
+    status: AssetStatus | None = Query(None),
+    category_id: uuid.UUID | None = Query(None),
+    location_id: uuid.UUID | None = Query(None),
+    project_id: uuid.UUID | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    actor: User = Depends(require_permission("assets.read")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy import func, select
+    from app.models.asset import Asset, AssetAssignment, AssetStatus
+    from app.models.project import Project
+
+    # 1. Total KPI counts by status
+    status_stmt = (
+        select(Asset.status, func.count(Asset.id))
+        .where(Asset.organization_id == actor.organization_id, Asset.archived_at.is_(None))
+    )
+    if status:
+        status_stmt = status_stmt.where(Asset.status == status)
+    if category_id:
+        status_stmt = status_stmt.where(Asset.category_id == category_id)
+    if location_id:
+        status_stmt = status_stmt.where(Asset.default_location_id == location_id)
+    if date_from:
+        status_stmt = status_stmt.where(Asset.created_at >= date_from)
+    if date_to:
+        status_stmt = status_stmt.where(Asset.created_at <= date_to)
+    if project_id:
+        proj_asset_subq = select(AssetAssignment.asset_id).where(
+            AssetAssignment.organization_id == actor.organization_id,
+            AssetAssignment.project_id == project_id,
+            AssetAssignment.status == "ACTIVE",
+        ).scalar_subquery()
+        status_stmt = status_stmt.where(Asset.id.in_(proj_asset_subq))
+
+    status_stmt = status_stmt.group_by(Asset.status)
+    status_rows = (await session.execute(status_stmt)).all()
+    counts = {getattr(r[0], "value", str(r[0])).upper(): int(r[1]) for r in status_rows}
+
+    total = sum(counts.values())
+    operating = counts.get("OPERATING", 0) + counts.get("ASSIGNED", 0)
+    available = counts.get("AVAILABLE", 0)
+    standby = counts.get("STANDBY", 0) + counts.get("MOBILIZING", 0)
+    breakdown = counts.get("BREAKDOWN", 0)
+    maintenance = counts.get("UNDER_MAINTENANCE", 0) + counts.get("MAINTENANCE", 0)
+    out_of_service = counts.get("OUT_OF_SERVICE", 0) + counts.get("DISPOSED", 0) + counts.get("QUARANTINED", 0)
+
+    # 2. Fleet by Project distribution
+    proj_stmt = (
+        select(
+            Project.name.label("project"),
+            Asset.status.label("asset_status"),
+            func.count(func.distinct(AssetAssignment.asset_id)).label("count"),
+        )
+        .join(Project, AssetAssignment.project_id == Project.id)
+        .join(Asset, AssetAssignment.asset_id == Asset.id)
+        .where(
+            AssetAssignment.organization_id == actor.organization_id,
+            AssetAssignment.status == "ACTIVE",
+            Asset.archived_at.is_(None),
+        )
+    )
+    if project_id:
+        proj_stmt = proj_stmt.where(Project.id == project_id)
+    if category_id:
+        proj_stmt = proj_stmt.where(Asset.category_id == category_id)
+    if location_id:
+        proj_stmt = proj_stmt.where(Asset.default_location_id == location_id)
+    if status:
+        proj_stmt = proj_stmt.where(Asset.status == status)
+
+    proj_stmt = proj_stmt.group_by(Project.name, Project.id, Asset.status).order_by(
+        func.count(func.distinct(AssetAssignment.asset_id)).desc()
+    )
+    proj_rows = (await session.execute(proj_stmt)).all()
+
+    project_map: dict[str, dict[str, Any]] = {}
+    for r in proj_rows:
+        p_name = str(r.project)
+        st = getattr(r.asset_status, "value", str(r.asset_status)).upper()
+        if p_name not in project_map:
+            project_map[p_name] = {
+                "project": p_name,
+                "count": 0,
+                "operating": 0,
+                "standby": 0,
+                "breakdown": 0,
+            }
+        cnt = int(r.count)
+        project_map[p_name]["count"] += cnt
+        if st in ("OPERATING", "ASSIGNED"):
+            project_map[p_name]["operating"] += cnt
+        elif st in ("STANDBY", "MOBILIZING", "UNDER_MAINTENANCE", "MAINTENANCE"):
+            project_map[p_name]["standby"] += cnt
+        elif st in ("BREAKDOWN", "OUT_OF_SERVICE", "QUARANTINED", "LOST", "STOLEN"):
+            project_map[p_name]["breakdown"] += cnt
+        else:
+            project_map[p_name]["operating"] += cnt
+
+    by_project = list(project_map.values())
+
+    # Include unassigned active assets
+    if not project_id:
+        assigned_subq = (
+            select(AssetAssignment.asset_id)
+            .where(
+                AssetAssignment.organization_id == actor.organization_id,
+                AssetAssignment.status == "ACTIVE",
+            )
+            .scalar_subquery()
+        )
+        unassigned_stmt = select(Asset.status, func.count(Asset.id)).where(
+            Asset.organization_id == actor.organization_id,
+            Asset.archived_at.is_(None),
+            ~Asset.id.in_(assigned_subq),
+        )
+        if category_id:
+            unassigned_stmt = unassigned_stmt.where(Asset.category_id == category_id)
+        if location_id:
+            unassigned_stmt = unassigned_stmt.where(Asset.default_location_id == location_id)
+        if status:
+            unassigned_stmt = unassigned_stmt.where(Asset.status == status)
+
+        unassigned_stmt = unassigned_stmt.group_by(Asset.status)
+        u_rows = (await session.execute(unassigned_stmt)).all()
+        if u_rows:
+            u_entry = {
+                "project": "Main Yard / Unassigned",
+                "count": 0,
+                "operating": 0,
+                "standby": 0,
+                "breakdown": 0,
+            }
+            for u in u_rows:
+                st = getattr(u[0], "value", str(u[0])).upper()
+                cnt = int(u[1])
+                u_entry["count"] += cnt
+                if st in ("OPERATING", "ASSIGNED", "AVAILABLE"):
+                    u_entry["operating"] += cnt
+                elif st in ("STANDBY", "MOBILIZING", "UNDER_MAINTENANCE", "MAINTENANCE"):
+                    u_entry["standby"] += cnt
+                else:
+                    u_entry["breakdown"] += cnt
+            if u_entry["count"] > 0:
+                by_project.append(u_entry)
+
+    return {
+        "total": total,
+        "operating": operating,
+        "available": available,
+        "standby": standby,
+        "breakdown": breakdown,
+        "under_maintenance": maintenance,
+        "maintenance": maintenance,
+        "out_of_service": out_of_service,
+        "total_assets": total,
+        "operating_assets": operating,
+        "available_assets": available,
+        "standby_assets": standby,
+        "breakdown_assets": breakdown,
+        "maintenance_assets": maintenance,
+        "under_maintenance_assets": maintenance,
+        "out_of_service_assets": out_of_service,
+        "critical_open_defects": 0,
+        "by_project": by_project,
+    }
+
+
+@router.get("/insurance/expiring")
+async def get_expiring_insurance(
+    days: int = 30,
+    actor: User = Depends(require_permission("assets.insurance.read")),
+    session: AsyncSession = Depends(get_session),
+):
+    return await AssetService(session, actor).get_expiring_insurance(days)
+
+
+@router.get("/registrations/expiring")
+async def get_expiring_registrations(
+    days: int = 30,
+    actor: User = Depends(require_permission("assets.registration.read")),
+    session: AsyncSession = Depends(get_session),
+):
+    return await AssetService(session, actor).get_expiring_registrations(days)
+
+
+@router.get("/expiring-documents")
+async def get_expiring_documents_and_deadlines(
+    days: int = 60,
+    actor: User = Depends(require_permission("assets.read")),
+    session: AsyncSession = Depends(get_session),
+):
+    return await AssetService(session, actor).get_expiring_documents_and_deadlines(days)
+
+
+@router.get("/defects/critical")
+async def get_critical_defects(
+    actor: User = Depends(require_permission("assets.defects.read")),
+    session: AsyncSession = Depends(get_session),
+):
+    return await AssetService(session, actor).get_critical_defects()
+
+
 @router.get("/{asset_id}", response_model=AssetRead)
 async def get_asset(
     asset_id: uuid.UUID,
@@ -361,15 +567,6 @@ async def add_asset_insurance(
     )
 
 
-@router.get("/insurance/expiring")
-async def get_expiring_insurance(
-    days: int = 30,
-    actor: User = Depends(require_permission("assets.insurance.read")),
-    session: AsyncSession = Depends(get_session),
-):
-    return await AssetService(session, actor).get_expiring_insurance(days)
-
-
 # ---- registration ----
 
 
@@ -400,15 +597,6 @@ async def add_asset_registration(
         body.get("notes"),
         request,
     )
-
-
-@router.get("/registrations/expiring")
-async def get_expiring_registrations(
-    days: int = 30,
-    actor: User = Depends(require_permission("assets.registration.read")),
-    session: AsyncSession = Depends(get_session),
-):
-    return await AssetService(session, actor).get_expiring_registrations(days)
 
 
 # ---- inspections ----
@@ -482,6 +670,17 @@ async def report_asset_defect(
     )
 
 
+@router.patch("/{asset_id}/defects/{defect_id}")
+async def update_asset_defect(
+    asset_id: uuid.UUID,
+    defect_id: uuid.UUID,
+    body: dict,
+    actor: User = Depends(require_permission("assets.defects.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    return await AssetService(session, actor).update_defect(asset_id, defect_id, body)
+
+
 @router.post("/{asset_id}/defects/{defect_id}/resolve")
 async def resolve_asset_defect(
     asset_id: uuid.UUID,
@@ -497,11 +696,3 @@ async def resolve_asset_defect(
 
     await service.ref(AssetDefect, defect_id, asset_id)
     return await service.resolve_equipment_defect(defect_id, notes or "Resolved")
-
-
-@router.get("/defects/critical")
-async def get_critical_defects(
-    actor: User = Depends(require_permission("assets.defects.read")),
-    session: AsyncSession = Depends(get_session),
-):
-    return await AssetService(session, actor).get_critical_defects()

@@ -30,3 +30,9 @@ Fuel logs record refuelling only; they do not automatically issue inventory. Mai
 - Migration upgrade → downgrade → upgrade passed on the isolated demo database; the forward migration is applied to the local development database.
 
 The development frontend remains configured for the local backend. No demo records were inserted into the operational database.
+
+## Asset form attachments
+
+Maintenance creation, editing and status changes (including completion), fuel logs and meter logs now accept optional supporting files. Upload retries retain the saved record and resume remaining files. Insurance, registration and inspection Document fields upload an asset document and link its ID automatically; existing documents are preserved on edits unless replaced. Attached documents can be downloaded from record details.
+
+Log uploads validate the log type and its owning asset/organization before saving, reject empty or unsupported files, and clean up stored files if the database write fails. Maintenance edits follow the same terminal-status restrictions as status changes.

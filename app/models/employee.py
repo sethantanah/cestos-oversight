@@ -230,6 +230,7 @@ class Position(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Base)
     grade: Mapped[str | None] = mapped_column(String(50))
     level: Mapped[str | None] = mapped_column(String(50))
     is_field_role: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    is_supervisory_role: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class Employee(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, ActorMixin, Base):

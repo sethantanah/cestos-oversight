@@ -22,3 +22,4 @@ class Client(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, ActorMi
     country: Mapped[str | None] = mapped_column(String(2))
     billing_email: Mapped[str | None] = mapped_column(String(320))
     notes: Mapped[str | None] = mapped_column(SAText)
+    profile_photo_url: Mapped[str | None] = mapped_column(String(500))

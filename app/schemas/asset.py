@@ -232,6 +232,10 @@ class AssetAssignmentRead(AssignmentFields, ORMModel):
     notes: str | None
     created_at: datetime
     updated_at: datetime
+    project_name: str | None = None
+    location_name: str | None = None
+    responsible_employee_name: str | None = None
+    primary_operator_name: str | None = None
 
 
 class AssetMeterReadingCreate(BaseModel):

@@ -3,7 +3,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 import structlog
-from fastapi import Depends, Request
+from fastapi import Depends, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,12 +29,14 @@ def request_storage(request: Request) -> LocalStorage:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    token: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(request_settings),
 ) -> User:
-    if credentials is None:
+    raw_token = credentials.credentials if credentials else token
+    if not raw_token:
         raise AuthenticationError("Bearer token required")
-    payload = decode_access_token(credentials.credentials, settings)
+    payload = decode_access_token(raw_token, settings)
     organization_id = uuid.UUID(payload["org"])
     user = await UserRepository(session, organization_id).get(uuid.UUID(payload["sub"]))
     if user is None or user.setup_required or payload.get("ver", 0) != user.token_version:
@@ -43,6 +45,7 @@ async def get_current_user(
     structlog.contextvars.bind_contextvars(
         user_id=str(user.id), organization_id=str(organization_id)
     )
+    session.info["document_actor"] = user
     return user
 
 
@@ -74,6 +77,16 @@ def require_permission(code: str) -> Callable[..., Coroutine[Any, Any, User]]:
                     "asset_documents.read": "assets.documents.read",
                     "assets.documents.manage": "asset_documents.manage",
                     "asset_documents.manage": "assets.documents.manage",
+                    "departments.manage": "employees.update",
+                    "positions.manage": "employees.update",
+                    "employees.contracts.manage": "employees.documents.manage",
+                    "projects.tasks.manage": "projects.update",
+                    "assets.assignments.manage": "assets.update",
+                    "assets.transfers.manage": "assets.update",
+                    "assets.logs.write": "assets.update",
+                    "projects.financials.read": "projects.read",
+                    "intelligence.read": "projects.read",
+                    "roles.manage": "users.create",
                 }.get(code, code),
             }
             for role in scoped_roles(user)

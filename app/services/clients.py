@@ -76,6 +76,7 @@ class ClientService:
                 country=body.country,
                 billing_email=body.billing_email,
                 notes=body.notes,
+                profile_photo_url=body.profile_photo_url,
                 created_by_id=self.actor.id,
                 updated_by_id=self.actor.id,
             )

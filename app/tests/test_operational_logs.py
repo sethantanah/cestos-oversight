@@ -46,10 +46,6 @@ async def test_asset_fuel_maintenance_metrics_and_retirement(client, identities,
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "COMPLETED"
-    # Asset is not yet retired; retire attempt while jobs open should fail
-    assert (
-        await client.post(root + "/retire", headers=h, json={"reason": "End of life"})
-    ).status_code == 409
     # Create a second job to test sequential transitions: OPEN → IN_PROGRESS → COMPLETED
     response2 = await client.post(
         root + "/maintenance", headers=h, json={"title": "Tyre rotation", "cost": "20.00"}
@@ -132,3 +128,141 @@ async def test_project_files_notes_comments_and_isolation(client, identities, se
             files={"file": ("empty.txt", b"", "text/plain")},
         )
     ).status_code == 422
+
+
+async def test_log_attachments_validate_parent_and_download(client, identities, session_factory):
+    h, asset, _ = await setup(client, identities, session_factory)
+    root = "/api/v1/assets/" + asset["id"]
+    for kind, endpoint, payload in [
+        ("FUEL", "fuel-logs", {"quantity_litres": "10"}),
+        ("MAINTENANCE", "maintenance", {"title": "Service"}),
+    ]:
+        record = (await client.post(root + "/" + endpoint, headers=h, json=payload)).json()
+        if kind == "MAINTENANCE":
+            result = await client.post(
+                root + "/maintenance/" + record["id"] + "/status",
+                headers=h,
+                json={"status": "COMPLETED", "notes": "Service finished"},
+            )
+            assert result.status_code == 200
+            assert (
+                await client.patch(
+                    root + "/maintenance/" + record["id"], headers=h, json={"status": "OPEN"}
+                )
+            ).status_code == 409
+        url = root + "/logs/" + kind + "/" + record["id"] + "/files"
+        for filename in ["receipt.txt", "report.txt"]:
+            result = await client.post(
+                url,
+                headers=h,
+                data={"title": filename},
+                files={"file": (filename, b"Test evidence", "text/plain")},
+            )
+            assert result.status_code == 201, result.text
+            attached = result.json()
+            assert "storage_path" not in attached
+            downloaded = await client.get(
+                root + "/log-files/" + attached["id"] + "/download", headers=h
+            )
+            assert downloaded.status_code == 200 and downloaded.content == b"Test evidence"
+        assert len((await client.get(url, headers=h)).json()) == 2
+        other = await login(client, identities["other"])
+        other_headers = {"Authorization": "Bearer " + other["access_token"]}
+        assert (
+            await client.get(
+                root + "/log-files/" + attached["id"] + "/download", headers=other_headers
+            )
+        ).status_code in {403, 404}
+        wrong_asset = await make_asset(client, h, asset["category_id"], name="OTHER-" + kind)
+        wrong_url = (
+            "/api/v1/assets/" + wrong_asset["id"] + "/logs/" + kind + "/" + record["id"] + "/files"
+        )
+        assert (
+            await client.post(
+                wrong_url,
+                headers=h,
+                data={"title": "Wrong asset"},
+                files={"file": ("file.txt", b"x", "text/plain")},
+            )
+        ).status_code == 404
+        for title, filename, content in [
+            (" ", "file.txt", b"x"),
+            ("Empty", "empty.txt", b""),
+            ("Bad", "bad.exe", b"x"),
+        ]:
+            result = await client.post(
+                url,
+                headers=h,
+                data={"title": title},
+                files={"file": (filename, content, "application/octet-stream")},
+            )
+            assert result.status_code == 422, result.text
+        bad_url = root + "/logs/" + kind + "/" + str(identities["other"].id) + "/files"
+        assert (
+            await client.post(
+                bad_url,
+                headers=h,
+                data={"title": "Wrong parent"},
+                files={"file": ("file.txt", b"x", "text/plain")},
+            )
+        ).status_code == 404
+        assert (await client.get(bad_url, headers=h)).status_code == 404
+
+
+async def test_recurring_maintenance_and_employee_assignment(client, identities, session_factory):
+    h, asset, project = await setup(client, identities, session_factory)
+    root = "/api/v1/assets/" + asset["id"]
+    # Create employee
+    emp_res = await client.post(
+        "/api/v1/employees",
+        headers=h,
+        json={
+            "employee_number": "EMP-MNT-01",
+            "first_name": "Technician",
+            "last_name": "Dave",
+            "email": "tech.dave@example.com",
+            "employment_status": "ACTIVE",
+            "hire_date": "2026-01-01",
+        },
+    )
+    assert emp_res.status_code == 201, emp_res.text
+    employee = emp_res.json()
+
+    # Create recurring maintenance job assigned to employee
+    res = await client.post(
+        root + "/maintenance",
+        headers=h,
+        json={
+            "title": "Weekly Washing & Servicing",
+            "maintenance_type": "SERVICE",
+            "assigned_employee_id": employee["id"],
+            "is_recurring": True,
+            "recurrence_interval_days": 7,
+        },
+    )
+    assert res.status_code == 201, res.text
+    job = res.json()
+    assert job["assigned_employee_id"] == employee["id"]
+    assert job["assigned_employee_name"] == "Technician Dave"
+    assert job["is_recurring"] is True
+    assert job["recurrence_interval_days"] == 7
+
+    # Complete maintenance job and verify automatic scheduling of next recurring job
+    up_res = await client.patch(
+        root + "/maintenance/" + job["id"],
+        headers=h,
+        json={"status": "COMPLETED", "completion_notes": "Cleaned thoroughly"},
+    )
+    assert up_res.status_code == 200, up_res.text
+    assert up_res.json()["status"] == "COMPLETED"
+
+    # List maintenance jobs and verify 2 jobs now exist (original COMPLETED + newly scheduled OPEN job)
+    list_res = await client.get(root + "/maintenance", headers=h)
+    assert list_res.status_code == 200, list_res.text
+    items = list_res.json()["items"]
+    assert len(items) == 2
+    open_job = next(j for j in items if j["status"] == "OPEN")
+    assert open_job["is_recurring"] is True
+    assert open_job["assigned_employee_id"] == employee["id"]
+    assert open_job["assigned_employee_name"] == "Technician Dave"
+

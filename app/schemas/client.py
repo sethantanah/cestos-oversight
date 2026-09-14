@@ -16,6 +16,7 @@ class ClientCreate(BaseModel):
     country: str | None = Field(default=None, min_length=2, max_length=2)
     billing_email: str | None = Field(default=None, max_length=320)
     notes: str | None = None
+    profile_photo_url: str | None = Field(default=None, max_length=500)
 
 
 class ClientUpdate(BaseModel):
@@ -29,6 +30,7 @@ class ClientUpdate(BaseModel):
     billing_email: str | None = Field(default=None, max_length=320)
     notes: str | None = None
     is_active: bool | None = None
+    profile_photo_url: str | None = Field(default=None, max_length=500)
 
 
 class ClientRead(ORMModel):
@@ -48,6 +50,7 @@ class ClientRead(ORMModel):
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    profile_photo_url: str | None
 
 
 ClientListItem = ClientRead

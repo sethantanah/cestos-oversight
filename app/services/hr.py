@@ -31,31 +31,37 @@ async def employee_in_org(
 
 
 async def link_account(session: AsyncSession, actor: User, employee: Employee) -> None:
-    email = employee.work_email or employee.personal_email
-    if not email:
+    raw_email = employee.work_email or employee.personal_email
+    if not raw_email:
         return
+    email = raw_email.lower().strip()
+    employee.work_email = email
+
     # Serialize employee-to-account matching, including simultaneous employee creation.
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"account:{actor.organization_id}:{email.lower()}"},
+        {"key": f"account:{actor.organization_id}:{email}"},
     )
     user = await session.scalar(
         select(User)
-        .where(User.organization_id == actor.organization_id, User.email == email.lower())
+        .where(User.organization_id == actor.organization_id, User.email == email)
         .with_for_update()
     )
     if user:
         if not user.is_active or user.archived_at:
-            raise ConflictError("This email belongs to an inactive account")
+            user.is_active = True
+            user.archived_at = None
         if user.is_superuser and not actor.is_superuser:
             raise ForbiddenError("Only a superadmin can link a superadmin account")
-        linked = await session.scalar(select(Employee.id).where(Employee.user_id == user.id))
+        linked = await session.scalar(
+            select(Employee.id).where(Employee.user_id == user.id, Employee.id != employee.id)
+        )
         if linked:
-            raise ConflictError("This account is already linked to an employee")
+            raise ConflictError("This account is already linked to another employee")
     else:
         user = User(
             organization_id=actor.organization_id,
-            email=email.lower(),
+            email=email,
             first_name=employee.first_name,
             last_name=employee.last_name,
             password_hash=await run_in_threadpool(hash_password, secrets.token_urlsafe(48)),
@@ -64,17 +70,21 @@ async def link_account(session: AsyncSession, actor: User, employee: Employee) -
         )
         session.add(user)
         await session.flush()
-        session.add(
-            EmailDelivery(
-                organization_id=actor.organization_id,
-                recipient_id=user.id,
-                kind="SETUP",
-                message="Set up your Cestos account",
-                next_attempt_at=datetime.now(UTC),
-            )
-        )
+
     employee.user_id = user.id
     employee.updated_at = datetime.now(UTC)
+
+    # Queue password reset / setup email for the associated user
+    session.add(
+        EmailDelivery(
+            organization_id=actor.organization_id,
+            recipient_id=user.id,
+            kind="SETUP",
+            message="Set up your Cestos account password",
+            next_attempt_at=datetime.now(UTC),
+        )
+    )
+
     record_audit(
         session,
         organization_id=actor.organization_id,
@@ -82,8 +92,33 @@ async def link_account(session: AsyncSession, actor: User, employee: Employee) -
         action="employee.account_linked",
         entity_type="employee",
         entity_id=employee.id,
-        new_values={"user_id": str(user.id)},
+        new_values={"user_id": str(user.id), "email": email},
     )
+
+
+async def sync_all_users_and_profiles(session: AsyncSession) -> int:
+    """Sync all unlinked employee profiles with matching user accounts across organizations."""
+    employees = (await session.scalars(select(Employee).where(Employee.user_id.is_(None)))).all()
+    count = 0
+    for emp in employees:
+        raw_email = emp.work_email or emp.personal_email
+        if not raw_email:
+            continue
+        email = raw_email.lower().strip()
+        user = await session.scalar(
+            select(User).where(
+                User.organization_id == emp.organization_id,
+                User.email == email,
+            )
+        )
+        if user:
+            emp.user_id = user.id
+            emp.work_email = email
+            count += 1
+    if count > 0:
+        await session.commit()
+    return count
+
 
 
 async def invalidate_account(session: AsyncSession, user: User) -> None:

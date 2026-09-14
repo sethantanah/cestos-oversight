@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(default=15, ge=1, le=60)
     refresh_token_expire_days: int = Field(default=30, ge=1, le=90)
     redis_url: str | None = None
+    db_pool_size: int = Field(default=20, ge=5, le=100)
+    db_max_overflow: int = Field(default=30, ge=5, le=100)
+    db_pool_timeout: int = Field(default=60, ge=10, le=300)
     cors_origins: list[str] = []
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     initial_admin_email: str | None = None

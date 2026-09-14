@@ -140,5 +140,5 @@ async def scheduler(app: FastAPI) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            structlog.get_logger().error("hr_scheduler_failed")
+            structlog.get_logger().error("hr_scheduler_failed", exc_info=True)
         await asyncio.sleep(app.state.settings.scheduler_interval_seconds)

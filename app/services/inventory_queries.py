@@ -344,7 +344,23 @@ class InventoryQueries(InventoryService):
         self, filters: dict[str, Any], page: int = 1, page_size: int = 50
     ) -> Any:
         t = m.InventoryTransaction
-        query = select(t).where(t.organization_id == self.org)
+        FromStore = aliased(m.InventoryStore)
+        ToStore = aliased(m.InventoryStore)
+        query = (
+            select(
+                t,
+                m.InventoryItem.name.label("item_name"),
+                m.InventoryItem.item_number.label("item_number"),
+                FromStore.name.label("from_store_name"),
+                ToStore.name.label("to_store_name"),
+                m.UnitOfMeasure.symbol.label("unit_symbol"),
+            )
+            .outerjoin(m.InventoryItem, t.item_id == m.InventoryItem.id)
+            .outerjoin(FromStore, t.from_store_id == FromStore.id)
+            .outerjoin(ToStore, t.to_store_id == ToStore.id)
+            .outerjoin(m.UnitOfMeasure, t.unit_id == m.UnitOfMeasure.id)
+            .where(t.organization_id == self.org)
+        )
         for key in [
             "item_id",
             "transaction_type",
@@ -359,9 +375,7 @@ class InventoryQueries(InventoryService):
             if filters.get(key) is not None:
                 query = query.where(getattr(t, key) == filters[key])
         if filters.get("category_id"):
-            query = query.join(m.InventoryItem, t.item_id == m.InventoryItem.id).where(
-                m.InventoryItem.category_id == filters["category_id"]
-            )
+            query = query.where(m.InventoryItem.category_id == filters["category_id"])
         if filters.get("store_id"):
             query = query.where(
                 or_(t.from_store_id == filters["store_id"], t.to_store_id == filters["store_id"])
@@ -370,7 +384,9 @@ class InventoryQueries(InventoryService):
             query = query.where(t.transaction_date >= filters["date_from"])
         if filters.get("date_to"):
             query = query.where(t.transaction_date <= filters["date_to"])
-        return await self.page(query.order_by(t.transaction_date.desc(), t.id), page, page_size)
+        return await self.page(
+            query.order_by(t.transaction_date.desc(), t.id), page, page_size, scalars=False
+        )
 
     async def reconciliation(self, page: int = 1, page_size: int = 50) -> Any:
         e = m.InventoryLedgerEntry

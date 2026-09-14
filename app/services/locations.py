@@ -3,6 +3,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import Request
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -118,7 +119,11 @@ class LocationService:
                 action="location.created",
                 entity_type="location",
                 entity_id=location.id,
-                new_values={"location_number": number, "name": body.name},
+                new_values={
+                    "location_number": number,
+                    "name": body.name,
+                    "project_id": str(location.project_id) if location.project_id else None,
+                },
                 **meta,
             )
             await self.session.commit()
@@ -151,6 +156,8 @@ class LocationService:
                 ).one_or_none()
                 if project is None:
                     raise NotFoundError("Project not found")
+            previous = jsonable_encoder({key: getattr(location, key) for key in data})
+            previous["project_id"] = str(location.project_id) if location.project_id else None
             for key, value in data.items():
                 setattr(location, key, value)
             location.updated_at = datetime.now(UTC)
@@ -167,7 +174,12 @@ class LocationService:
                 action="location.updated",
                 entity_type="location",
                 entity_id=location.id,
-                new_values={"name": location.name},
+                old_values=previous,
+                new_values={
+                    **jsonable_encoder(data),
+                    "name": location.name,
+                    "project_id": str(location.project_id) if location.project_id else None,
+                },
                 **meta,
             )
             await self.session.commit()

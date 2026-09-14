@@ -257,6 +257,7 @@ class PositionService:
                 grade=body.grade,
                 level=body.level,
                 is_field_role=body.is_field_role,
+                is_supervisory_role=body.is_supervisory_role,
             )
             self.session.add(position)
             await self.session.flush()
@@ -2579,6 +2580,15 @@ class LeaveRequestService:
             )
         ).all()
         return [LeaveRequestRead.model_validate(row) for row in rows]
+
+    async def list_all(self, status: str | None = None) -> Sequence[LeaveRequestRead]:
+        query = organization_query(LeaveRequest, self.actor.organization_id)
+        if status:
+            query = query.where(LeaveRequest.status == LeaveRequestStatus(status))
+        query = query.order_by(LeaveRequest.start_date.desc())
+        rows = (await self.session.scalars(query)).all()
+        return [LeaveRequestRead.model_validate(row) for row in rows]
+
 
     async def update(
         self,

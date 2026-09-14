@@ -112,6 +112,10 @@ async def test_salary_dates_scope_and_alert_dedup(client, identities, session_fa
     assert end.status_code == 200, end.text
     salary["start_date"] = "2026-09-01"
     assert (await client.post(base, json=salary, headers=headers)).status_code == 201
+    all_sals = await client.get("/api/v1/hr/salaries", headers=headers)
+    assert all_sals.status_code == 200, all_sals.text
+    assert len(all_sals.json()) >= 2
+    assert all_sals.json()[0]["employee_name"] is not None
     doc = await client.post(
         f"/api/v1/employees/{employee['id']}/documents",
         json={

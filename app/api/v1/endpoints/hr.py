@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from typing import Any, NoReturn
 
 import structlog
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,9 @@ from app.core.security import hash_password, token_hash
 from app.db.session import get_session
 from app.models import Employee, User
 from app.models.employee import (
+    AssignmentStatus,
+    AvailabilityStatus,
+    EmploymentStatus,
     LeaveRequest,
     EmployeeAssignment,
     EmployeeDocument,
@@ -66,14 +69,54 @@ def audit(session: AsyncSession, actor: User, action: str, entity_id: uuid.UUID)
     )
 
 
+@router.get("/salaries", response_model=list[SalaryRead])
+async def list_all_salaries(
+    employee_id: uuid.UUID | None = Query(None),
+    department_id: uuid.UUID | None = Query(None),
+    pay_period: str | None = Query(None),
+    currency: str | None = Query(None),
+    active_only: bool = Query(False),
+    actor: User = Depends(require_permission("employees.salary.read")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    stmt = (
+        select(Salary, Employee)
+        .join(Employee, Salary.employee_id == Employee.id)
+        .where(
+            Salary.organization_id == actor.organization_id,
+            Employee.organization_id == actor.organization_id,
+        )
+    )
+    if employee_id:
+        stmt = stmt.where(Salary.employee_id == employee_id)
+    if department_id:
+        stmt = stmt.where(Employee.department_id == department_id)
+    if pay_period:
+        stmt = stmt.where(Salary.pay_period == pay_period)
+    if currency:
+        stmt = stmt.where(Salary.currency == currency)
+    if active_only:
+        stmt = stmt.where(Salary.end_date.is_(None))
+
+    stmt = stmt.order_by(Salary.start_date.desc())
+    results = (await session.execute(stmt)).all()
+    out = []
+    for sal, emp in results:
+        data = SalaryRead.model_validate(sal)
+        data.employee_name = f"{emp.first_name} {emp.last_name}".strip()
+        data.employee_number = emp.employee_number
+        out.append(data)
+    return out
+
+
 @router.get("/employees/{employee_id}/salaries", response_model=list[SalaryRead])
 async def salaries(
     employee_id: uuid.UUID,
     actor: User = Depends(require_permission("employees.salary.read")),
     session: AsyncSession = Depends(get_session),
 ) -> Any:
-    await employee_in_org(session, actor, employee_id)
-    return (
+    emp = await employee_in_org(session, actor, employee_id)
+    rows = (
         await session.scalars(
             select(Salary)
             .where(
@@ -82,6 +125,13 @@ async def salaries(
             .order_by(Salary.start_date.desc())
         )
     ).all()
+    out = []
+    for sal in rows:
+        data = SalaryRead.model_validate(sal)
+        data.employee_name = f"{emp.first_name} {emp.last_name}".strip()
+        data.employee_number = emp.employee_number
+        out.append(data)
+    return out
 
 
 @router.post("/employees/{employee_id}/salaries", response_model=SalaryRead, status_code=201)
@@ -801,10 +851,111 @@ async def download_leave_letter(
     prefix = f"leave-letters/{actor.organization_id}/{leave.employee_id}/"
     if not leave.attachment_url or not leave.attachment_url.startswith(prefix):
         raise NotFoundError("Leave letter not found")
+    from app.services.document_access import require_document_path
+    await require_document_path(session, actor, leave.attachment_url)
     try:
         path = request.app.state.storage.resolve(leave.attachment_url)
     except ValueError as error:
         raise NotFoundError("Leave letter not found") from error
-    if not path.is_file():
-        raise NotFoundError("Leave letter not found")
     return FileResponse(path, filename=f"leave-letter{path.suffix}", media_type="application/octet-stream")
+
+
+@router.get("/workforce-stats")
+async def get_workforce_stats(
+    department_id: uuid.UUID | None = Query(None),
+    employment_status: EmploymentStatus | None = Query(None),
+    availability_status: AvailabilityStatus | None = Query(None),
+    project_id: uuid.UUID | None = Query(None),
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    from sqlalchemy import func, select, or_
+    from app.models.employee import Department
+    from app.models.project import Project
+
+    # 1. Employees by Department (Current headcount per department)
+    dept_stmt = (
+        select(
+            func.coalesce(Department.name, Employee.department, "General / Unassigned").label("dept"),
+            func.count(Employee.id).label("count"),
+        )
+        .outerjoin(Department, Employee.department_id == Department.id)
+        .where(
+            Employee.organization_id == actor.organization_id,
+            Employee.archived_at.is_(None),
+        )
+    )
+    if department_id:
+        dept_stmt = dept_stmt.where(Employee.department_id == department_id)
+    if employment_status:
+        dept_stmt = dept_stmt.where(Employee.employment_status == employment_status)
+    else:
+        dept_stmt = dept_stmt.where(Employee.employment_status == EmploymentStatus.ACTIVE)
+    if project_id:
+        proj_emp_subq = select(EmployeeAssignment.employee_id).where(
+            EmployeeAssignment.organization_id == actor.organization_id,
+            EmployeeAssignment.project_id == project_id,
+            EmployeeAssignment.status == AssignmentStatus.ACTIVE,
+        ).scalar_subquery()
+        dept_stmt = dept_stmt.where(Employee.id.in_(proj_emp_subq))
+
+    dept_stmt = dept_stmt.group_by(Department.name, Employee.department).order_by(func.count(Employee.id).desc())
+    dept_rows = (await session.execute(dept_stmt)).all()
+    by_department = [{"dept": str(r.dept), "count": int(r.count)} for r in dept_rows]
+
+    # 2. Employees by Project (Current deployment distribution)
+    proj_stmt = (
+        select(
+            Project.name.label("project"),
+            func.count(func.distinct(EmployeeAssignment.employee_id)).label("count"),
+        )
+        .join(Project, EmployeeAssignment.project_id == Project.id)
+        .where(
+            EmployeeAssignment.organization_id == actor.organization_id,
+            EmployeeAssignment.status == AssignmentStatus.ACTIVE,
+        )
+    )
+    if project_id:
+        proj_stmt = proj_stmt.where(Project.id == project_id)
+    if department_id:
+        dept_emp_subq = select(Employee.id).where(Employee.department_id == department_id).scalar_subquery()
+        proj_stmt = proj_stmt.where(EmployeeAssignment.employee_id.in_(dept_emp_subq))
+
+    proj_stmt = proj_stmt.group_by(Project.name).order_by(func.count(func.distinct(EmployeeAssignment.employee_id)).desc())
+    proj_rows = (await session.execute(proj_stmt)).all()
+    by_project = [{"project": str(r.project), "count": int(r.count)} for r in proj_rows]
+
+    # Include active employees not deployed on active project assignments
+    if not project_id:
+        assigned_subq = (
+            select(EmployeeAssignment.employee_id)
+            .where(
+                EmployeeAssignment.organization_id == actor.organization_id,
+                EmployeeAssignment.status == AssignmentStatus.ACTIVE,
+            )
+            .scalar_subquery()
+        )
+
+        unassigned_stmt = (
+            select(func.count(Employee.id))
+            .where(
+                Employee.organization_id == actor.organization_id,
+                Employee.archived_at.is_(None),
+                ~Employee.id.in_(assigned_subq),
+            )
+        )
+        if department_id:
+            unassigned_stmt = unassigned_stmt.where(Employee.department_id == department_id)
+        if employment_status:
+            unassigned_stmt = unassigned_stmt.where(Employee.employment_status == employment_status)
+        else:
+            unassigned_stmt = unassigned_stmt.where(Employee.employment_status == EmploymentStatus.ACTIVE)
+
+        unassigned_count = await session.scalar(unassigned_stmt) or 0
+        if unassigned_count > 0:
+            by_project.append({"project": "Main Yard / Unassigned", "count": int(unassigned_count)})
+
+    return {
+        "by_department": by_department,
+        "by_project": by_project,
+    }
