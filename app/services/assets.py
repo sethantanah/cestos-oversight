@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any
 import decimal
 import math
@@ -1290,7 +1292,7 @@ class AssetService:
         ).all()
         return rows
 
-    async def get_expiring_documents_and_deadlines(self, days: int = 60) -> list[dict]:
+    async def get_expiring_documents_and_deadlines(self, days: int = 60) -> Sequence[dict[str, Any]]:
         """Get comprehensive equipment expiring documents, licences, warranties, and maintenance deadlines"""
         from datetime import timedelta
         today = datetime.now(UTC).date()
