@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import uuid
 
@@ -8,10 +10,10 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import Settings
 from app.core.exceptions import NotFoundError
 from app.core.security import hash_password
-from app.models import User
+from app.models import Permission, Role, User
 from app.repositories.user import UserRepository
 from app.schemas.common import Page
-from app.schemas.user import UserCreate, UserRead
+from app.schemas.user import UserCreate, UserRead, UserUpdate
 from app.services.audit import record_audit, request_metadata
 from app.services.supabase_auth import SupabaseAuthSyncService
 

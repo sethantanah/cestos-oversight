@@ -1,7 +1,7 @@
 """Scoped asset logs and project attachments, using the shared storage backend."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.dependencies import require_permission
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.session import get_session
-from app.models import AssetAssignment, Employee, Project, User
+from app.models import AssetAssignment, Employee, Location, Project, User
 from app.models.asset import AssetMeterReading
 from app.models.asset_records import AssetDefect, AssetInspection
 from app.models.operational_logs import (
