@@ -121,7 +121,7 @@ async def lookup(
     return await service.overview(row.id)
 
 
-@router.get("/assets/dashboard-summary")
+@router.get("/assets/full-summary")
 async def dashboard(
     actor: User = Depends(require_permission("assets.read")),
     session: AsyncSession = Depends(get_session),
