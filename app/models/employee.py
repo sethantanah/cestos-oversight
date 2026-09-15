@@ -648,6 +648,7 @@ class LeaveRequest(UUIDMixin, TimestampMixin, OrganizationMixin, ActorMixin, Bas
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), index=True)
+    leave_type: Mapped[str | None] = mapped_column(String(100), default="Annual Leave", nullable=True)
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date)
     reason: Mapped[str | None] = mapped_column(SAText)

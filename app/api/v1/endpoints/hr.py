@@ -535,13 +535,14 @@ async def my_profile(
 ) -> Any:
     employee = await own_employee(session, actor)
     fields = (
-        "employee_number first_name middle_name last_name preferred_name gender date_of_birth "
+        "id employee_number first_name middle_name last_name preferred_name gender date_of_birth "
         "nationality marital_status personal_email work_email primary_phone secondary_phone "
         "residential_address city county_or_region country department job_title employment_type "
         "employment_status hire_date probation_end_date confirmation_date contract_start_date "
         "contract_end_date"
     ).split()
     data = {key: getattr(employee, key) for key in fields}
+    data["id"] = str(employee.id)
     # Explicit allowlists: no HR notes, family records, other users, or audit history.
     resources: dict[str, tuple[Any, str]] = {
         "contracts": (

@@ -61,6 +61,8 @@ class SupplierCreate(InventoryInput):
     contact_name: str | None = Field(None, max_length=150)
     email: str | None = Field(None, max_length=320)
     phone: str | None = Field(None, max_length=50)
+    address: str | None = Field(None, max_length=10000, description="Physical or billing address")
+    country: str | None = Field(None, max_length=100, description="Country of origin or headquarters")
     notes: str | None = Field(None, max_length=10000)
     is_active: bool = Field(True)
 
@@ -70,6 +72,8 @@ class SupplierUpdate(InventoryInput):
     contact_name: str | None = Field(None, max_length=150)
     email: str | None = Field(None, max_length=320)
     phone: str | None = Field(None, max_length=50)
+    address: str | None = Field(None, max_length=10000, description="Physical or billing address")
+    country: str | None = Field(None, max_length=100, description="Country of origin or headquarters")
     notes: str | None = Field(None, max_length=10000)
     is_active: bool | None = Field(None)
 

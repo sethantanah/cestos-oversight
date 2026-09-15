@@ -2537,6 +2537,7 @@ class LeaveRequestService:
             leave = LeaveRequest(
                 organization_id=self.actor.organization_id,
                 employee_id=employee_id,
+                leave_type=body.leave_type or "Annual Leave",
                 start_date=body.start_date,
                 end_date=body.end_date,
                 reason=body.reason,
@@ -2607,14 +2608,17 @@ class LeaveRequestService:
             if not leave:
                 raise NotFoundError("Leave request not found")
             
-            if body.status not in ("APPROVED", "REJECTED"):
-                raise ValidationError("Choose approve or reject")
-            if leave.status != LeaveRequestStatus.PENDING:
-                raise ConflictError("Only pending leave requests can be decided")
-            leave.status = LeaveRequestStatus(body.status)
-            if leave.status == LeaveRequestStatus.APPROVED:
-                leave.approved_by_id = self.actor.id
-                leave.approved_at = datetime.now(UTC)
+            if body.leave_type is not None:
+                leave.leave_type = body.leave_type
+            if body.status is not None:
+                if body.status not in ("APPROVED", "REJECTED"):
+                    raise ValidationError("Choose approve or reject")
+                if leave.status != LeaveRequestStatus.PENDING:
+                    raise ConflictError("Only pending leave requests can be decided")
+                leave.status = LeaveRequestStatus(body.status)
+                if leave.status == LeaveRequestStatus.APPROVED:
+                    leave.approved_by_id = self.actor.id
+                    leave.approved_at = datetime.now(UTC)
 
             leave.updated_by_id = self.actor.id
             leave.updated_at = datetime.now(UTC)

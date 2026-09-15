@@ -6,15 +6,17 @@ from datetime import datetime
 from typing import Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, or_, delete
+from sqlalchemy import func, select, or_, delete, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.dependencies import get_current_active_user, require_permission
 from app.db.session import get_session
 from app.models import (
     Asset,
     AssetCategory,
     AssetMeterReading,
+    AssetAssignment,
     Client,
     Employee,
     EmployeeAssignment,
@@ -26,6 +28,7 @@ from app.models.employee import Department, AssignmentStatus, EmploymentStatus, 
 from app.models.asset import AssetStatus
 from app.models.project import ProjectStatus
 from app.models.operational_logs import AssetFuelLog, AssetMaintenanceJob
+from app.models.asset_records import AssetDefect
 from app.models.inventory import InventoryItem, InventoryStore, InventoryCategory, InventoryIssue, InventoryIssueItem, InventoryBalance
 from app.models.hr import Salary as EmployeeSalary
 from app.models.document_library import LibraryDocument
@@ -112,6 +115,14 @@ async def get_intelligence_metrics(
     """Return executive cross-domain operational intelligence metrics with comprehensive filtering."""
     org_id = user.organization_id
 
+    if not isinstance(project_id, str): project_id = None
+    if not isinstance(location_id, str): location_id = None
+    if not isinstance(department_id, str): department_id = None
+    if not isinstance(category_id, str): category_id = None
+    if not isinstance(status, str): status = None
+    if not isinstance(date_from, str): date_from = None
+    if not isinstance(date_to, str): date_to = None
+
     # Parse optional dates
     d_from = None
     d_to = None
@@ -134,6 +145,15 @@ async def get_intelligence_metrics(
         asset_query = asset_query.where(Asset.category_id == category_id)
     if location_id:
         asset_query = asset_query.where(Asset.default_location_id == location_id)
+    if department_id:
+        asset_query = asset_query.where(Asset.responsible_employee_id.in_(select(Employee.id).where(Employee.department_id == department_id)))
+    if project_id:
+        asset_query = asset_query.where(
+            or_(
+                Asset.id.in_(select(AssetAssignment.asset_id).where(AssetAssignment.project_id == project_id, AssetAssignment.status == "ACTIVE")),
+                Asset.default_location_id.in_(select(Location.id).where(Location.project_id == project_id))
+            )
+        )
     if status and status != 'ALL':
         st_upper = status.upper()
         if st_upper in VALID_ASSET_STATUSES:
@@ -158,6 +178,15 @@ async def get_intelligence_metrics(
         fleet_cat_stmt = fleet_cat_stmt.where(Asset.default_location_id == location_id)
     if category_id:
         fleet_cat_stmt = fleet_cat_stmt.where(Asset.category_id == category_id)
+    if department_id:
+        fleet_cat_stmt = fleet_cat_stmt.where(Asset.responsible_employee_id.in_(select(Employee.id).where(Employee.department_id == department_id)))
+    if project_id:
+        fleet_cat_stmt = fleet_cat_stmt.where(
+            or_(
+                Asset.id.in_(select(AssetAssignment.asset_id).where(AssetAssignment.project_id == project_id, AssetAssignment.status == "ACTIVE")),
+                Asset.default_location_id.in_(select(Location.id).where(Location.project_id == project_id))
+            )
+        )
 
     fleet_cat_stmt = fleet_cat_stmt.group_by(AssetCategory.name).order_by(func.count(Asset.id).desc())
     fleet_cat_rows = (await session.execute(fleet_cat_stmt)).all()
@@ -167,22 +196,28 @@ async def get_intelligence_metrics(
     fuel_query = select(func.sum(AssetFuelLog.quantity_litres)).where(
         AssetFuelLog.organization_id == org_id
     )
-    if d_from:
-        fuel_query = fuel_query.where(AssetFuelLog.recorded_at >= d_from)
-    if d_to:
-        fuel_query = fuel_query.where(AssetFuelLog.recorded_at <= d_to)
-    total_fuel = (await session.execute(fuel_query)).scalar() or 0.0
-
     meter_query = select(func.sum(AssetMeterReading.reading)).where(
         AssetMeterReading.organization_id == org_id
     )
+    if category_id:
+        fuel_query = fuel_query.where(AssetFuelLog.asset_id.in_(select(Asset.id).where(Asset.category_id == category_id)))
+        meter_query = meter_query.where(AssetMeterReading.asset_id.in_(select(Asset.id).where(Asset.category_id == category_id)))
+    if location_id:
+        fuel_query = fuel_query.where(or_(AssetFuelLog.location_id == location_id, AssetFuelLog.asset_id.in_(select(Asset.id).where(Asset.default_location_id == location_id))))
+        meter_query = meter_query.where(AssetMeterReading.asset_id.in_(select(Asset.id).where(Asset.default_location_id == location_id)))
+    if project_id:
+        fuel_query = fuel_query.where(or_(AssetFuelLog.project_id == project_id, AssetFuelLog.asset_id.in_(select(AssetAssignment.asset_id).where(AssetAssignment.project_id == project_id))))
+        meter_query = meter_query.where(AssetMeterReading.asset_id.in_(select(AssetAssignment.asset_id).where(AssetAssignment.project_id == project_id)))
     if d_from:
+        fuel_query = fuel_query.where(AssetFuelLog.recorded_at >= d_from)
         meter_query = meter_query.where(AssetMeterReading.recorded_at >= d_from)
     if d_to:
+        fuel_query = fuel_query.where(AssetFuelLog.recorded_at <= d_to)
         meter_query = meter_query.where(AssetMeterReading.recorded_at <= d_to)
+
+    total_fuel = (await session.execute(fuel_query)).scalar() or 0.0
     total_meter_hours = (await session.execute(meter_query)).scalar() or 0.0
     fuel_efficiency_lph = round(float(total_fuel) / float(total_meter_hours), 2) if total_meter_hours > 0 else 0.0
-
 
     # 3. Drilling Performance
     proj_query = select(
@@ -203,19 +238,75 @@ async def get_intelligence_metrics(
 
     p_cnt, target_m, contract_val = (await session.execute(proj_query)).one()
     target_m = float(target_m or 0.0)
-    drilled_m = round(target_m * 0.85, 1) if target_m > 0 else 0.0
-    drilling_completion_pct = 85.0 if target_m > 0 else 0.0
 
+    # Filtered drilled metres calculation
+    completed_stmt = (
+        select(func.coalesce(func.sum(Project.target_metres), 0))
+        .where(Project.organization_id == org_id, Project.status == ProjectStatus.COMPLETED, Project.archived_at.is_(None))
+    )
+    active_stmt = (
+        select(func.coalesce(func.sum(Project.target_metres), 0))
+        .where(Project.organization_id == org_id, Project.status == ProjectStatus.ACTIVE, Project.archived_at.is_(None))
+    )
+    if project_id:
+        completed_stmt = completed_stmt.where(Project.id == project_id)
+        active_stmt = active_stmt.where(Project.id == project_id)
+    if location_id:
+        completed_stmt = completed_stmt.where(Project.id.in_(select(Location.project_id).where(Location.id == location_id)))
+        active_stmt = active_stmt.where(Project.id.in_(select(Location.project_id).where(Location.id == location_id)))
+
+    completed_m = (await session.execute(completed_stmt)).scalar() or 0.0
+    active_m = (await session.execute(active_stmt)).scalar() or 0.0
+
+    drilled_m = round(float(completed_m) + (float(active_m) * 0.65), 1)
+    if target_m > 0:
+        drilled_m = min(target_m, drilled_m)
+        drilling_completion_pct = round((drilled_m / target_m) * 100, 1)
+    else:
+        drilling_completion_pct = 0.0
 
     # Projects by Status
     proj_status_stmt = select(Project.status, func.count(Project.id)).where(
         Project.organization_id == org_id, Project.archived_at.is_(None)
     )
+    if project_id:
+        proj_status_stmt = proj_status_stmt.where(Project.id == project_id)
     if location_id:
         proj_status_stmt = proj_status_stmt.where(Project.id.in_(select(Location.project_id).where(Location.id == location_id, Location.project_id.is_not(None))))
     proj_status_stmt = proj_status_stmt.group_by(Project.status)
     proj_status_rows = (await session.execute(proj_status_stmt)).all()
     projects_by_status = [{"status": str(st).title(), "count": int(cnt)} for st, cnt in proj_status_rows]
+
+    # Equipment Defects & Maintenance Severity Telemetry
+    defects_stmt = select(
+        func.count(AssetDefect.id),
+        func.coalesce(func.sum(case((AssetDefect.severity == "CRITICAL", 1), else_=0)), 0),
+        func.coalesce(func.sum(case((AssetDefect.severity == "HIGH", 1), else_=0)), 0),
+        func.coalesce(func.sum(case((AssetDefect.severity == "MEDIUM", 1), else_=0)), 0),
+        func.coalesce(func.sum(case((AssetDefect.severity == "LOW", 1), else_=0)), 0),
+    ).where(AssetDefect.organization_id == org_id, AssetDefect.status == "OPEN")
+
+    if category_id:
+        defects_stmt = defects_stmt.where(AssetDefect.asset_id.in_(select(Asset.id).where(Asset.category_id == category_id)))
+    if location_id:
+        defects_stmt = defects_stmt.where(AssetDefect.asset_id.in_(select(Asset.id).where(Asset.default_location_id == location_id)))
+    if project_id:
+        defects_stmt = defects_stmt.where(AssetDefect.asset_id.in_(select(AssetAssignment.asset_id).where(AssetAssignment.project_id == project_id)))
+    if department_id:
+        defects_stmt = defects_stmt.where(AssetDefect.asset_id.in_(select(Asset.id).where(Asset.responsible_employee_id.in_(select(Employee.id).where(Employee.department_id == department_id)))))
+    if d_from:
+        defects_stmt = defects_stmt.where(AssetDefect.created_at >= d_from)
+    if d_to:
+        defects_stmt = defects_stmt.where(AssetDefect.created_at <= d_to)
+
+    open_defects_count, critical_defects_count, high_defects_count, medium_defects_count, low_defects_count = (await session.execute(defects_stmt)).one()
+
+    defects_by_severity = [
+        {"severity": "Critical", "count": int(critical_defects_count or 0)},
+        {"severity": "High", "count": int(high_defects_count or 0)},
+        {"severity": "Medium", "count": int(medium_defects_count or 0)},
+        {"severity": "Low", "count": int(low_defects_count or 0)},
+    ]
 
     # 4. Workforce Productivity
     emp_query = select(func.count(Employee.id)).where(
@@ -224,7 +315,9 @@ async def get_intelligence_metrics(
     if department_id:
         emp_query = emp_query.where(Employee.department_id == department_id)
     if location_id:
-        emp_query = emp_query.where(Employee.home_location_id == location_id)
+        emp_query = emp_query.where(or_(Employee.home_location_id == location_id, Employee.id.in_(select(EmployeeAssignment.employee_id).where(EmployeeAssignment.project_id.in_(select(Location.project_id).where(Location.id == location_id))))))
+    if project_id:
+        emp_query = emp_query.where(Employee.id.in_(select(EmployeeAssignment.employee_id).where(EmployeeAssignment.project_id == project_id, EmployeeAssignment.status == AssignmentStatus.ACTIVE)))
     if status and status != 'ALL':
         st_upper = status.upper()
         if st_upper in VALID_EMPLOYMENT_STATUSES:
@@ -239,6 +332,11 @@ async def get_intelligence_metrics(
     )
     if project_id:
         assigned_query = assigned_query.where(EmployeeAssignment.project_id == project_id)
+    if location_id:
+        assigned_query = assigned_query.where(EmployeeAssignment.project_id.in_(select(Location.project_id).where(Location.id == location_id)))
+    if department_id:
+        assigned_query = assigned_query.where(EmployeeAssignment.employee_id.in_(select(Employee.id).where(Employee.department_id == department_id)))
+
     assigned_emp = (await session.execute(assigned_query)).scalar() or 0
     workforce_deployment_rate = round((assigned_emp / total_emp * 100), 1) if total_emp > 0 else 0.0
 
@@ -250,6 +348,11 @@ async def get_intelligence_metrics(
     )
     if department_id:
         dept_stmt = dept_stmt.where(Employee.department_id == department_id)
+    if location_id:
+        dept_stmt = dept_stmt.where(Employee.home_location_id == location_id)
+    if project_id:
+        dept_stmt = dept_stmt.where(Employee.id.in_(select(EmployeeAssignment.employee_id).where(EmployeeAssignment.project_id == project_id, EmployeeAssignment.status == AssignmentStatus.ACTIVE)))
+
     dept_stmt = dept_stmt.group_by(Department.name, Employee.department).order_by(func.count(Employee.id).desc())
     dept_rows = (await session.execute(dept_stmt)).all()
     workforce_by_department = [{"department": str(r.dept), "count": int(r.count)} for r in dept_rows]
@@ -262,6 +365,11 @@ async def get_intelligence_metrics(
     )
     if project_id:
         wf_proj_stmt = wf_proj_stmt.where(EmployeeAssignment.project_id == project_id)
+    if location_id:
+        wf_proj_stmt = wf_proj_stmt.where(EmployeeAssignment.project_id.in_(select(Location.project_id).where(Location.id == location_id)))
+    if department_id:
+        wf_proj_stmt = wf_proj_stmt.where(EmployeeAssignment.employee_id.in_(select(Employee.id).where(Employee.department_id == department_id)))
+
     wf_proj_stmt = wf_proj_stmt.group_by(Project.name).order_by(func.count(func.distinct(EmployeeAssignment.employee_id)).desc())
     wf_proj_rows = (await session.execute(wf_proj_stmt)).all()
     workforce_by_project = [{"project": str(r.project), "count": int(r.count)} for r in wf_proj_rows]
@@ -278,6 +386,10 @@ async def get_intelligence_metrics(
     )
     if category_id:
         inv_query = inv_query.where(InventoryItem.category_id == category_id)
+    if location_id:
+        inv_query = inv_query.where(InventoryBalance.store_id.in_(select(InventoryStore.id).where(InventoryStore.location_id == location_id)))
+    if project_id:
+        inv_query = inv_query.where(InventoryBalance.store_id.in_(select(InventoryStore.id).where(InventoryStore.location_id.in_(select(Location.id).where(Location.project_id == project_id)))))
 
     inv_count, inv_valuation = (await session.execute(inv_query)).one()
 
@@ -294,15 +406,41 @@ async def get_intelligence_metrics(
     )
     if category_id:
         inv_cat_stmt = inv_cat_stmt.where(InventoryItem.category_id == category_id)
-    inv_cat_stmt = inv_cat_stmt.group_by(InventoryCategory.name).order_by(func.coalesce(func.sum(InventoryBalance.inventory_value), 0).desc())
+    if location_id:
+        inv_cat_stmt = inv_cat_stmt.where(InventoryBalance.store_id.in_(select(InventoryStore.id).where(InventoryStore.location_id == location_id)))
+    if project_id:
+        inv_cat_stmt = inv_cat_stmt.where(InventoryBalance.store_id.in_(select(InventoryStore.id).where(InventoryStore.location_id.in_(select(Location.id).where(Location.project_id == project_id)))))
 
+    inv_cat_stmt = inv_cat_stmt.group_by(InventoryCategory.name).order_by(func.coalesce(func.sum(InventoryBalance.inventory_value), 0).desc())
     inv_cat_rows = (await session.execute(inv_cat_stmt)).all()
     inventory_by_category = [{"category": str(r.category), "value": float(r.value or 0.0)} for r in inv_cat_rows]
 
-    # 6. Operations & Site Metrics
-    loc_count = (await session.execute(select(func.count(Location.id)).where(Location.organization_id == org_id, Location.archived_at.is_(None)))).scalar() or 0
+    # 6. Site Operational Capacity Matrix & Site Metrics
+    loc_stmt = select(Location.id, Location.name).where(Location.organization_id == org_id, Location.archived_at.is_(None))
+    if location_id:
+        loc_stmt = loc_stmt.where(Location.id == location_id)
+    if project_id:
+        loc_stmt = loc_stmt.where(Location.project_id == project_id)
+
+    loc_rows = (await session.execute(loc_stmt.limit(8))).all()
+    site_capacity_breakdown = []
+    for l_id, l_name in loc_rows:
+        l_assets = (await session.execute(select(func.count(Asset.id)).where(Asset.organization_id == org_id, Asset.default_location_id == l_id, Asset.archived_at.is_(None)))).scalar() or 0
+        l_staff = (await session.execute(select(func.count(Employee.id)).where(Employee.organization_id == org_id, Employee.home_location_id == l_id, Employee.archived_at.is_(None)))).scalar() or 0
+        l_defects = (await session.execute(select(func.count(AssetDefect.id)).where(AssetDefect.organization_id == org_id, AssetDefect.status == "OPEN", AssetDefect.asset_id.in_(select(Asset.id).where(Asset.default_location_id == l_id))))).scalar() or 0
+        l_val = (await session.execute(select(func.coalesce(func.sum(InventoryBalance.inventory_value), 0)).where(InventoryBalance.organization_id == org_id, InventoryBalance.store_id.in_(select(InventoryStore.id).where(InventoryStore.location_id == l_id))))).scalar() or 0.0
+        site_capacity_breakdown.append({
+            "site_id": str(l_id),
+            "site_name": str(l_name),
+            "fleet_count": int(l_assets),
+            "workforce_count": int(l_staff),
+            "open_defects": int(l_defects),
+            "stock_value": float(l_val),
+        })
+
+    loc_count = len(loc_rows) if (location_id or project_id) else ((await session.execute(select(func.count(Location.id)).where(Location.organization_id == org_id, Location.archived_at.is_(None)))).scalar() or 0)
     client_count = (await session.execute(select(func.count(Client.id)).where(Client.organization_id == org_id, Client.archived_at.is_(None)))).scalar() or 0
-    maint_count = (await session.execute(select(func.count(AssetMaintenanceJob.id)).where(AssetMaintenanceJob.organization_id == org_id))).scalar() or 0
+    maint_count = (await session.execute(select(func.count(AssetMaintenanceJob.id)).where(AssetMaintenanceJob.organization_id == org_id, AssetMaintenanceJob.status.in_(["OPEN", "IN_PROGRESS"])))).scalar() or 0
 
     return {
         "fleet_utilization": {
@@ -313,6 +451,8 @@ async def get_intelligence_metrics(
             "breakdown": fleet_by_status.get("BREAKDOWN", 0),
             "standby": fleet_by_status.get("STANDBY", 0),
             "utilization_rate_pct": utilization_rate,
+            "open_defects_count": int(open_defects_count or 0),
+            "critical_defects_count": int(critical_defects_count or 0),
             "by_category": fleet_by_category,
         },
         "fuel_efficiency": {
@@ -345,8 +485,116 @@ async def get_intelligence_metrics(
             "total_locations": loc_count,
             "total_clients": client_count,
             "active_maintenance_jobs": maint_count,
+            "open_defects_count": int(open_defects_count or 0),
+            "critical_defects_count": int(critical_defects_count or 0),
+        },
+        "defect_intelligence": {
+            "open_defects_count": int(open_defects_count or 0),
+            "critical_defects_count": int(critical_defects_count or 0),
+            "high_defects_count": int(high_defects_count or 0),
+            "medium_defects_count": int(medium_defects_count or 0),
+            "low_defects_count": int(low_defects_count or 0),
+            "defects_by_severity": defects_by_severity,
+            "active_maintenance_jobs": maint_count,
+        },
+        "site_intelligence": {
+            "total_active_sites": loc_count,
+            "site_capacity_breakdown": site_capacity_breakdown,
+        },
+        "efficiency_analytics": {
+            "fleet_availability_ratio": round((operating_fleet / total_fleet * 100), 1) if total_fleet > 0 else 0.0,
+            "workforce_idle_count": max(0, total_emp - assigned_emp),
+            "estimated_fuel_cost_usd": round(float(total_fuel) * 1.45, 2),
         },
     }
+
+
+async def _lookup_employee_assignments(user_query: str, org_id: Any, session: AsyncSession) -> list[dict[str, Any]]:
+    """Lookup specific employee assignment details when a query mentions employee names or assignment terms."""
+    if not user_query:
+        return []
+
+    q_lower = user_query.lower()
+    stop_words = {
+        "what", "is", "are", "the", "a", "an", "assigned", "assignment", "project", "site",
+        "where", "who", "which", "has", "have", "employee", "employees", "staff", "workforce",
+        "personnel", "and", "for", "with", "show", "list", "find", "get", "tell", "me", "working",
+        "on", "to", "current", "active", "status", "role", "details", "overview", "metrics"
+    }
+    raw_tokens = [t.strip(",.?!'\"") for t in q_lower.split() if len(t.strip(",.?!'\"")) > 1]
+    search_tokens = [t for t in raw_tokens if t not in stop_words]
+
+    if not search_tokens:
+        return []
+
+    or_conds = []
+    for t in search_tokens:
+        or_conds.extend([
+            Employee.first_name.ilike(f"%{t}%"),
+            Employee.last_name.ilike(f"%{t}%"),
+            (Employee.first_name + " " + Employee.last_name).ilike(f"%{t}%"),
+        ])
+
+    emp_stmt = select(Employee).where(
+        Employee.organization_id == org_id,
+        Employee.archived_at.is_(None),
+        or_(*or_conds)
+    )
+    
+    emp_res = await session.execute(emp_stmt.limit(10))
+    matched_employees = emp_res.scalars().all()
+    if not matched_employees:
+        return []
+
+    emp_ids = [e.id for e in matched_employees]
+    
+    assign_stmt = (
+        select(EmployeeAssignment, Project, Location)
+        .join(Project, EmployeeAssignment.project_id == Project.id)
+        .outerjoin(Location, EmployeeAssignment.location_id == Location.id)
+        .where(
+            EmployeeAssignment.employee_id.in_(emp_ids),
+            EmployeeAssignment.organization_id == org_id,
+        )
+    )
+    assign_res = await session.execute(assign_stmt)
+    assign_rows = assign_res.all()
+
+    assigned_emp_map = {}
+    for ea, proj, loc in assign_rows:
+        assigned_emp_map[ea.employee_id] = {
+            "assignment_id": str(ea.id),
+            "assigned_project": proj.name,
+            "project_id": str(proj.id),
+            "project_status": str(proj.status.value if hasattr(proj.status, 'value') else proj.status),
+            "role_on_project": ea.role_on_project or "Assigned Personnel",
+            "location": loc.name if loc else "N/A",
+            "assignment_status": str(ea.status.value if hasattr(ea.status, 'value') else ea.status),
+            "start_date": str(ea.start_date) if ea.start_date else None,
+            "end_date": str(ea.end_date) if ea.end_date else None,
+            "notes": ea.notes,
+        }
+
+    results = []
+    for emp in matched_employees:
+        emp_info = {
+            "employee_id": str(emp.id),
+            "employee_name": f"{emp.first_name} {emp.last_name}",
+            "job_title": emp.job_title or "Staff Member",
+            "department": emp.department or "General Operations",
+            "employment_status": str(emp.employment_status.value if hasattr(emp.employment_status, 'value') else emp.employment_status),
+        }
+        if emp.id in assigned_emp_map:
+            emp_info.update(assigned_emp_map[emp.id])
+        else:
+            emp_info.update({
+                "assigned_project": None,
+                "assignment_status": "UNASSIGNED",
+                "message": f"{emp.first_name} {emp.last_name} ({emp.job_title or 'Staff'}) currently has no active project assignment recorded in the database.",
+            })
+        results.append(emp_info)
+
+    return results
 
 
 async def _execute_db_tool(category: str, user: User, session: AsyncSession, user_query: str = "") -> dict[str, Any]:
@@ -430,6 +678,10 @@ async def _execute_db_tool(category: str, user: User, session: AsyncSession, use
             elif search_terms or "skill" in q_lower or "computer" in q_lower:
                 res_payload["skill_search_status"] = f"No specific personnel found matching terms: '{', '.join(search_terms) if search_terms else q_lower}' in recorded skills, qualifications, or job titles."
 
+            emp_assignments = await _lookup_employee_assignments(user_query, org_id, session)
+            if emp_assignments:
+                res_payload["matched_employee_assignments"] = emp_assignments
+
             return res_payload
 
         elif "fleet" in cat or "asset" in cat or "equipment" in cat:
@@ -464,13 +716,19 @@ async def _execute_db_tool(category: str, user: User, session: AsyncSession, use
             target_sum = (await session.execute(select(func.sum(Project.target_metres)).where(Project.organization_id == org_id, Project.archived_at.is_(None)))).scalar() or 0.0
             sample_project_id = str(p_all[0][0]) if p_all else None
             sample_project_name = str(p_all[0][1]) if p_all else None
-            return {
+
+            res_payload = {
                 "total_projects": total,
                 "total_target_metres": float(target_sum),
                 "sample_projects": projs[:10],
                 "first_project_id": sample_project_id,
                 "first_project_name": sample_project_name,
             }
+            emp_assignments = await _lookup_employee_assignments(user_query, org_id, session)
+            if emp_assignments:
+                res_payload["matched_employee_assignments"] = emp_assignments
+
+            return res_payload
 
         elif "inventory" in cat or "stock" in cat or "store" in cat:
             inv_res = await session.execute(
@@ -666,6 +924,42 @@ def _synthesize_intelligent_reply(
     lines = [f"### Executive Analysis for **\"{latest_user_message}\"**", ""]
     q_lower = latest_user_message.lower()
 
+    # Check for matched employee project assignments in db_tool_data
+    matched_assignments = []
+    for domain, data in db_tool_data.items():
+        if isinstance(data, dict) and "matched_employee_assignments" in data:
+            matched_assignments.extend(data["matched_employee_assignments"])
+
+    if matched_assignments:
+        lines.append("#### Personnel Project Assignment Telemetry")
+        for item in matched_assignments:
+            emp_name = item.get("employee_name", "Employee")
+            emp_id = item.get("employee_id")
+            title = item.get("job_title", "Staff")
+            dept = item.get("department", "General")
+            proj_name = item.get("assigned_project")
+            proj_id = item.get("project_id")
+            role = item.get("role_on_project", title)
+            status = item.get("assignment_status", "ACTIVE")
+            loc = item.get("location", "N/A")
+
+            emp_link = f"[{emp_name}](/workspace/employees/{emp_id})" if emp_id else emp_name
+            if proj_name:
+                proj_link = f"[{proj_name}](/projects-overview)"
+                lines.append(f"- **Personnel**: {emp_link} ({title}, {dept})")
+                lines.append(f"  - **Assigned Project**: {proj_link}")
+                lines.append(f"  - **Project Role**: {role}")
+                lines.append(f"  - **Assignment Status**: **{status}**")
+                if loc and loc != "N/A":
+                    lines.append(f"  - **Location**: {loc}")
+                lines.append(f"  - **Quick Links**: [View Employee Record](/workspace/employees/{emp_id}) | [View Project Details](/projects-overview)")
+            else:
+                lines.append(f"- **Personnel**: {emp_link} ({title}, {dept})")
+                lines.append(f"  - **Assigned Project**: None")
+                lines.append(f"  - **Assignment Status**: **UNASSIGNED**")
+                lines.append(f"  - **Details**: {item.get('message', 'No active project assignment recorded in database.')}")
+            lines.append("")
+
     # 1. Handle Skill / Personnel / Qualification / Resume Queries
     if any(k in q_lower for k in ["skill", "computer", "software", "tech", "qualification", "resume", "cv", "who", "which employee"]):
         lines.append("#### Identified Personnel & Technical Competencies")
@@ -735,7 +1029,7 @@ def _synthesize_intelligent_reply(
                         lines.append(f"- **Database Record**: [{match_item}](/workspace/employees?search={first_word})")
                     found_personnel = True
 
-        if not found_personnel:
+        if not found_personnel and not matched_assignments:
             lines.append("No specific personnel matching your requested skill criteria were found in the active database or document library.")
             lines.append("")
 
@@ -763,7 +1057,7 @@ def _synthesize_intelligent_reply(
             if isinstance(data, dict):
                 lines.append(f"**Domain `{domain.capitalize()}` Metrics**:")
                 for k, v in data.items():
-                    if k not in ["first_project_id", "first_project_name", "skill_search_status", "matching_personnel_skills_and_qualifications"]:
+                    if k not in ["first_project_id", "first_project_name", "skill_search_status", "matching_personnel_skills_and_qualifications", "matched_employee_assignments"]:
                         lines.append(f"  - **{k.replace('_', ' ').title()}**: {v}")
             else:
                 lines.append(f"  - {data}")
@@ -871,10 +1165,11 @@ async def assistant_chat(
         if p_row:
             suggested_filters = {"project_id": str(p_row[0]), "project_name": str(p_row[1])}
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key:
+    settings = get_settings()
+    openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+    if openai_key and len(openai_key) > 10:
         try:
-            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            model_name = settings.openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
             system_prompt = (
                 "You are Antigravity Smart Assistant, an executive operations intelligence assistant for Cestos Operations. "
                 "Executive operational decisions depend directly on your responses. You MUST maintain an absolute zero-hallucination policy:\n"
@@ -921,8 +1216,9 @@ async def assistant_chat(
                     tools_used=tools_used or ["query_database_metrics"],
                     suggested_filters=suggested_filters or None,
                 )
-        except Exception:
-            pass
+        except Exception as err:
+            print(f"[OpenAI API Call Error]: {err}")
+            raise Exception(f"[OpenAI API Call Error]: {err}")
 
     # Built-in Agentic Synthesis Engine (when OPENAI_API_KEY is not configured or on network error)
     if not db_tool_data and not citations:

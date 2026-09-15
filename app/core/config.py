@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     smtp_from: str | None = None
     smtp_starttls: bool = True
     smtp_use_ssl: bool = False
-    public_base_url: str = "http://localhost:8000/test-ui"
+    public_base_url: str = "http://localhost:3000/sign-up-login"
     storage_dir: str = "storage"
     max_upload_size_mb: int = Field(default=10, ge=1, le=100)
     storage_provider: Literal["local", "supabase"] = "local"
@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     supabase_anon_key: str | None = None
     supabase_bucket: str = "cestos-storage"
     supabase_auth_enabled: bool = False
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
 
     @field_validator("database_url")
     @classmethod

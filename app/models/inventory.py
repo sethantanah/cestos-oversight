@@ -63,6 +63,8 @@ class Supplier(InventoryRecord, ArchiveMixin):
     contact_name: Mapped[str | None] = mapped_column(String(150))
     email: Mapped[str | None] = mapped_column(String(320))
     phone: Mapped[str | None] = mapped_column(String(50))
+    address: Mapped[str | None] = mapped_column(Text)
+    country: Mapped[str | None] = mapped_column(String(100))
     notes: Mapped[str | None] = mapped_column(Text)
 
 

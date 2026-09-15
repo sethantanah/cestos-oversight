@@ -92,11 +92,19 @@ async def deliver_one(session: AsyncSession, settings: Settings) -> bool:
             token_hash=token_hash(raw),
             expires_at=now + timedelta(hours=24),
         )
+        base_url = settings.public_base_url.rstrip('/')
+        if '#reset=' in base_url or '?reset=' in base_url:
+            reset_url = f"{base_url}{raw}"
+        elif base_url.endswith('/sign-up-login') or base_url.endswith('/test-ui'):
+            reset_url = f"{base_url}/#reset={raw}"
+        else:
+            reset_url = f"{base_url}/sign-up-login#reset={raw}"
+
         body += (
             f"\n\nReset link issued: {issued_at}.\n"
             "This link replaces earlier setup/reset links. Use the link in this message.\n"
             "Open this single-use link within 24 hours:\n"
-            f"{settings.public_base_url.rstrip('/')}/#reset={raw}\n\n"
+            f"{reset_url}\n\n"
             "If you did not expect this invitation, contact your administrator."
         )
     else:

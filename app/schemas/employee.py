@@ -948,6 +948,7 @@ class TimeLogRead(ORMModel):
 
 
 class LeaveRequestCreate(BaseModel):
+    leave_type: str | None = Field(default="Annual Leave", description="Leave category e.g. Annual Leave, Sick Leave, Emergency Leave")
     start_date: date = Field(..., description="Leave start date")
     end_date: date = Field(..., description="Leave end date")
     reason: str | None = Field(default=None, description="Reason for leave")
@@ -964,6 +965,7 @@ class LeaveRequestCreate(BaseModel):
 
 
 class LeaveRequestUpdate(BaseModel):
+    leave_type: str | None = Field(default=None, description="Leave category")
     start_date: date | None = Field(default=None, description="Leave start date")
     end_date: date | None = Field(default=None, description="Leave end date")
     reason: str | None = Field(default=None, description="Reason for leave")
@@ -979,6 +981,7 @@ class LeaveRequestRead(ORMModel):
     id: uuid.UUID
     organization_id: uuid.UUID
     employee_id: uuid.UUID
+    leave_type: str | None = "Annual Leave"
     start_date: date
     end_date: date
     reason: str | None

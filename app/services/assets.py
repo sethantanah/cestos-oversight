@@ -47,6 +47,7 @@ from app.schemas.asset import (
     AssetCategoryRead,
     AssetComponentCreate,
     AssetComponentRead,
+    AssetComponentUpdate,
     AssetCreate,
     AssetDocumentCreate,
     AssetDocumentRead,
@@ -407,6 +408,45 @@ class AssetService:
                 entity_type="asset_component",
                 entity_id=component.id,
                 new_values={"asset_id": str(asset_id), "name": body.name},
+            )
+            await self.session.commit()
+            return AssetComponentRead.model_validate(component)
+        except (NotFoundError, ConflictError):
+            await self.session.rollback()
+            raise
+        except Exception:
+            await self.session.rollback()
+            raise
+
+    async def update_component(
+        self, asset_id: uuid.UUID, component_id: uuid.UUID, body: AssetComponentUpdate
+    ) -> AssetComponentRead:
+        try:
+            await self._get_or_404(asset_id)
+            component = (
+                await self.session.scalars(
+                    organization_query(AssetComponent, self.actor.organization_id).where(
+                        AssetComponent.id == component_id,
+                        AssetComponent.asset_id == asset_id,
+                    )
+                )
+            ).one_or_none()
+            if component is None:
+                raise NotFoundError("Asset component not found")
+
+            update_data = body.model_dump(exclude_unset=True)
+            for field, value in update_data.items():
+                setattr(component, field, value)
+
+            await self.session.flush()
+            record_audit(
+                self.session,
+                organization_id=self.actor.organization_id,
+                actor_user_id=self.actor.id,
+                action="asset.component_updated",
+                entity_type="asset_component",
+                entity_id=component.id,
+                new_values={"asset_id": str(asset_id), **update_data},
             )
             await self.session.commit()
             return AssetComponentRead.model_validate(component)

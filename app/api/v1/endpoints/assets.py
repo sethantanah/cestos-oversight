@@ -21,6 +21,7 @@ from app.schemas.asset import (
     AssetCategoryRead,
     AssetComponentCreate,
     AssetComponentRead,
+    AssetComponentUpdate,
     AssetCreate,
     AssetDocumentCreate,
     AssetDocumentRead,
@@ -384,6 +385,18 @@ async def add_asset_component(
     session: AsyncSession = Depends(get_session),
 ) -> AssetComponentRead:
     return await AssetService(session, actor).add_component(asset_id, body)
+
+
+@router.patch("/{asset_id}/components/{component_id}", response_model=AssetComponentRead)
+@router.put("/{asset_id}/components/{component_id}", response_model=AssetComponentRead)
+async def update_asset_component(
+    asset_id: uuid.UUID,
+    component_id: uuid.UUID,
+    body: AssetComponentUpdate,
+    actor: User = Depends(require_permission("assets.components.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> AssetComponentRead:
+    return await AssetService(session, actor).update_component(asset_id, component_id, body)
 
 
 @router.get("/{asset_id}/documents", response_model=list[AssetDocumentRead])

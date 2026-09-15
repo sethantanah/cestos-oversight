@@ -249,8 +249,9 @@ async def index_one(session_factory, storage):
     doc_id, storage_path, file_name, org_id = doc_info
     try:
         path = await run_in_threadpool(storage.resolve, storage_path)
-        result = await run_in_threadpool(
-            build_index, path, file_name, doc_id, org_id
+        result = await asyncio.wait_for(
+            run_in_threadpool(build_index, path, file_name, doc_id, org_id),
+            timeout=15.0,
         )
     except Exception as error:
         from pypdf.errors import PdfReadError
@@ -258,7 +259,9 @@ async def index_one(session_factory, storage):
         message = (
             "Text indexing failed. Retry after checking the file and local model availability."
         )
-        if isinstance(error, PdfReadError):
+        if isinstance(error, TimeoutError | asyncio.TimeoutError):
+            message = "Text indexing timed out. Check file or model availability."
+        elif isinstance(error, PdfReadError):
             message = (
                 "This PDF is damaged or incomplete. Upload a valid PDF to extract its text."
             )

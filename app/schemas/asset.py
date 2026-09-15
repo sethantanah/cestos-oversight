@@ -179,6 +179,22 @@ class AssetComponentCreate(ComponentFields):
     notes: str | None = None
 
 
+class AssetComponentUpdate(ComponentFields):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    component_type: str | None = Field(default=None, max_length=100)
+    manufacturer: str | None = Field(default=None, max_length=150)
+    model: str | None = Field(default=None, max_length=150)
+    serial_number: str | None = Field(default=None, max_length=150)
+    installation_date: date | None = None
+    meter_at_installation: Decimal | None = Field(
+        default=None, ge=0, max_digits=18, decimal_places=2
+    )
+    expected_life_hours: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    expected_life_cycles: Decimal | None = Field(default=None, ge=0)
+    status: ComponentStatus | None = None
+    notes: str | None = None
+
+
 class AssetComponentRead(ComponentFields, ORMModel):
     id: uuid.UUID
     organization_id: uuid.UUID
