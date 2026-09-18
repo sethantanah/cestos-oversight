@@ -28,6 +28,10 @@ PREFIXES: dict[str, tuple[str, int]] = {
     "drilling_program": ("DPG", 6),
     "drilling_hole": ("DHL", 6),
     "drilling_shift": ("DSR", 6),
+    "maintenance_work_order": ("MWO", 6),
+    "hse_incident": ("HSE", 6),
+    "hse_corrective_action": ("CAP", 6),
+
 
 }
 

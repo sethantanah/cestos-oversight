@@ -11,9 +11,11 @@ from app.api.v1.endpoints import (
     employees,
     equipment,
     hr,
+    hse,
     intelligence,
     inventory,
     locations,
+    maintenance,
     notifications,
     operational_logs,
     operations,
@@ -76,3 +78,5 @@ router.include_router(intelligence.router)
 router.include_router(email.router)
 router.include_router(drilling.router)
 router.include_router(commercial.router)
+router.include_router(maintenance.router)
+router.include_router(hse.router)

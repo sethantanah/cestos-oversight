@@ -170,3 +170,18 @@ from app.models.drilling_commercial import (  # noqa: F401
 )
 
 from app.models import drilling as drilling  # noqa: F401
+from app.models.maintenance_hse import (  # noqa: F401
+    MaintenanceWorkOrder,
+    WorkOrderCostLine,
+    HseIncident,
+    HseCorrectiveAction,
+    WorkOrderType,
+    WorkOrderPriority,
+    WorkOrderStatus,
+    FailureTaxonomy,
+    HseIncidentType,
+    HseSeverity,
+    HseIncidentStatus,
+    HseActionStatus,
+)
+
