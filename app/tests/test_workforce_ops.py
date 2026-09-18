@@ -143,6 +143,22 @@ async def test_assignment_types_transfer_and_primary_rules(client, identities, s
         await client.get(f"/api/v1/employee-assignments/{first['id']}", headers=headers)
     ).json()
     assert fetched["assignment_number"] == first["assignment_number"]
+    # Editing an existing active assignment uses the canonical assignment route
+    # and does not create a second active primary assignment.
+    updated = await client.patch(
+        f"/api/v1/employee-assignments/{first['id']}",
+        json={"role_on_project": "Lead Driller", "supervisor_id": None},
+        headers=headers,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["role_on_project"] == "Lead Driller"
+    active_primary = [
+        row for row in (await client.get(
+            f"/api/v1/employees/{employee['id']}/assignments", headers=headers
+        )).json()
+        if row["status"] == "ACTIVE" and row["is_primary"]
+    ]
+    assert len(active_primary) == 1
     # Non-primary second active assignment is allowed.
     relief = await client.post(
         f"/api/v1/employees/{employee['id']}/assignments",

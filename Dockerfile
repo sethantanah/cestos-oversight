@@ -16,5 +16,7 @@ COPY frontend ./frontend
 ENV DOCUMENT_INDEX_DIR=/home/cestos/document-index
 RUN useradd --create-home --uid 10001 cestos
 USER cestos
+RUN mkdir -p /home/cestos/document-index/models \
+    && .venv/bin/python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_dir='/home/cestos/document-index/models')"
 EXPOSE 8000
 CMD ["/srv/cestos/.venv/bin/python", "-m", "scripts.start"]

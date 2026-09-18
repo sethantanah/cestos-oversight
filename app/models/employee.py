@@ -294,6 +294,14 @@ class Employee(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Actor
     supervisor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"))
     home_location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("locations.id"))
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), unique=True)
+    user: Mapped["User | None"] = relationship("User", foreign_keys="[Employee.user_id]", lazy="raise")
+
+    @property
+    def roles(self):
+        if hasattr(self, 'user') and self.user:
+            return [{"id": str(r.id), "name": r.name, "code": getattr(r, "code", None)} for r in self.user.roles] if getattr(self.user, "roles", None) else []
+        return []
+
     profile_photo_url: Mapped[str | None] = mapped_column(SAText)
     bio: Mapped[str | None] = mapped_column(SAText)
     notes: Mapped[str | None] = mapped_column(SAText)

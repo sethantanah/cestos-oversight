@@ -135,7 +135,8 @@ class EmployeeCreate(BaseModel):
     termination_reason: str | None = None
     supervisor_id: uuid.UUID | None = None
     home_location_id: uuid.UUID | None = None
-    profile_photo_url: str | None = None
+    profile_photo_url: str | None
+    roles: list[dict] = []
     bio: str | None = None
     notes: str | None = None
 
@@ -172,7 +173,8 @@ class EmployeeUpdate(BaseModel):
     termination_reason: str | None = None
     supervisor_id: uuid.UUID | None = None
     home_location_id: uuid.UUID | None = None
-    profile_photo_url: str | None = None
+    profile_photo_url: str | None
+    roles: list[dict] = []
     bio: str | None = None
     notes: str | None = None
 
@@ -213,6 +215,7 @@ class EmployeeRead(ORMModel):
     supervisor_id: uuid.UUID | None
     home_location_id: uuid.UUID | None
     profile_photo_url: str | None
+    roles: list[dict] = []
     bio: str | None
     notes: str | None
     is_active: bool
@@ -234,6 +237,7 @@ class EmployeeBasic(ORMModel):
     employee_number: str
     full_name: str
     profile_photo_url: str | None
+    roles: list[dict] = []
     job_title: str | None
     position_id: uuid.UUID | None
     department_id: uuid.UUID | None
@@ -724,6 +728,7 @@ class EmployeeAssignmentCreate(BaseModel):
 
 
 class EmployeeAssignmentUpdate(BaseModel):
+    project_id: uuid.UUID | None = None
     location_id: uuid.UUID | None = None
     position_id: uuid.UUID | None = None
     role_on_project: str | None = Field(default=None, max_length=150)
@@ -1021,6 +1026,7 @@ class EmployeeOverview(ORMModel):
     department: DepartmentRead | None
     position: PositionRead | None
     supervisor: EmployeeRead | None
+    supervisor_name: str | None = None
     availability_status: AvailabilityStatus
     compliance: ComplianceResult
     current_assignment: EmployeeAssignmentRead | None

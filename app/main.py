@@ -23,6 +23,7 @@ from app.core.storage import build_storage
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     from app.services import document_registry  # noqa: F401
+    from app.services import employee_access  # noqa: F401
 
     settings = settings or get_settings()
     configure_logging(settings.log_level)

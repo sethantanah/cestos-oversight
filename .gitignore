@@ -14,4 +14,13 @@ dist/
 .test-postgres.log
 .ui-check/
 
+.test-document-ui-storage/
+.dependency-check-venv/
+.asset-ui/
+.frontend-integration/
+.idea/
+Microsoft/
+*.log
+scratch.txt
+migration_result.txt
 .document-index/

@@ -137,7 +137,13 @@ class DepartmentService:
         return organization_query(Department, self.actor.organization_id)
 
     async def list(self) -> Sequence[DepartmentRead]:
-        rows = (await self.session.scalars(self._scope().order_by(Department.name))).all()
+        rows = (
+            await self.session.scalars(
+                self._scope().order_by(
+                    Department.parent_department_id.is_not(None), Department.name
+                )
+            )
+        ).all()
         return [DepartmentRead.model_validate(row) for row in rows]
 
     async def create(self, body: DepartmentCreate) -> DepartmentRead:

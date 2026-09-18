@@ -177,10 +177,13 @@ class EmployeeService:
 
     async def _get_or_404(self, employee_id: uuid.UUID) -> Employee:
         employee = (
-            await self.session.scalars(self._scope().where(Employee.id == employee_id))
+            await self.session.scalars(self._scope().where(Employee.id == employee_id)
+                                       .execution_options(employee_self_service=True))
         ).one_or_none()
         if employee is None:
             raise NotFoundError("Employee not found")
+        if employee.user_id == self.actor.id:
+            self.session.info["employee_self_service"] = True
         return employee
 
     def operational_read(self, read: EmployeeRead) -> EmployeeRead:
@@ -263,6 +266,9 @@ class EmployeeService:
         sort_dir: str = "asc",
     ) -> Page[EmployeeRead]:
         query = self._scope()
+        from sqlalchemy.orm import selectinload
+        from app.models.user import User
+        query = query.options(selectinload(Employee.user).selectinload(User.roles))
         if search:
             like = f"%{search}%"
             query = query.where(
@@ -430,7 +436,10 @@ class EmployeeService:
                     )
                 ).all()
             )
-        query = self._scope().where(Employee.is_active == True)  # noqa: E712
+        query = self._scope()
+        from sqlalchemy.orm import selectinload
+        from app.models.user import User
+        query = query.options(selectinload(Employee.user).selectinload(User.roles)).where(Employee.is_active == True)  # noqa: E712
         if position_id is not None:
             query = query.where(Employee.position_id == position_id)
         if department_id is not None:
@@ -763,7 +772,10 @@ class EmployeeService:
             if supervisor_id == self_id and self_id is not None:
                 raise ValidationError("An employee cannot supervise themselves")
             supervisor = (
-                await self.session.scalars(self._scope().where(Employee.id == supervisor_id))
+                await self.session.scalars(select(Employee.__table__.c.id).where(
+                    Employee.__table__.c.id == supervisor_id,
+                    Employee.__table__.c.organization_id == self.actor.organization_id,
+                ))
             ).one_or_none()
             if supervisor is None:
                 raise NotFoundError("Supervisor not found")
@@ -799,7 +811,10 @@ class EmployeeService:
                 raise NotFoundError("Home location not found")
 
     async def _check_work_email_unique(self, work_email: str, self_id: uuid.UUID | None) -> None:
-        query = self._scope().where(Employee.work_email == work_email.lower())
+        query = self._scope()
+        from sqlalchemy.orm import selectinload
+        from app.models.user import User
+        query = query.options(selectinload(Employee.user).selectinload(User.roles)).where(Employee.work_email == work_email.lower())
         if self_id is not None:
             query = query.where(Employee.id != self_id)
         if (await self.session.scalars(query)).first() is not None:
@@ -945,7 +960,10 @@ class EmployeeService:
                 raise NotFoundError("Position not found")
         if body.supervisor_id is not None:
             supervisor = (
-                await self.session.scalars(self._scope().where(Employee.id == body.supervisor_id))
+                await self.session.scalars(select(Employee.__table__.c.id).where(
+                    Employee.__table__.c.id == body.supervisor_id,
+                    Employee.__table__.c.organization_id == self.actor.organization_id,
+                ))
             ).one_or_none()
             if supervisor is None:
                 raise NotFoundError("Supervisor not found")
@@ -998,7 +1016,7 @@ class EmployeeService:
                 raise NotFoundError("Assignment not found")
             data = body.model_dump(exclude_unset=True)
             merged = EmployeeAssignmentCreate(
-                project_id=assignment.project_id,
+                project_id=data.get("project_id", assignment.project_id),
                 location_id=data.get("location_id", assignment.location_id),
                 position_id=data.get("position_id", assignment.position_id),
                 role_on_project=data.get("role_on_project", assignment.role_on_project),
@@ -1271,6 +1289,26 @@ class EmployeeService:
             ).one_or_none()
         assignments = list(await self.list_assignments(employee_id))
         current = next((a for a in assignments if a.status == AssignmentStatus.ACTIVE), None)
+        active_supervised_assignment = next((
+            a for a in assignments
+            if a.status == AssignmentStatus.ACTIVE and a.supervisor_id
+            and a.start_date <= date.today()
+            and (a.end_date is None or a.end_date >= date.today())
+        ), None)
+        supervisor_id = employee.supervisor_id or (
+            active_supervised_assignment.supervisor_id if active_supervised_assignment else None
+        )
+        supervisor_name = None
+        if supervisor_id:
+            # Expose only this authorized employee's supervisor name. The linked
+            # supervisor's full profile remains subject to its own access check.
+            table = Employee.__table__
+            name = (await self.session.execute(select(
+                table.c.first_name, table.c.middle_name, table.c.last_name
+            ).where(table.c.id == supervisor_id,
+                    table.c.organization_id == self.actor.organization_id))).first()
+            if name:
+                supervisor_name = " ".join(part for part in name if part)
         current_project_name: str | None = None
         current_location_name: str | None = None
         if current is not None:
@@ -1433,6 +1471,7 @@ class EmployeeService:
             department=DepartmentRead.model_validate(department) if department else None,
             position=PositionRead.model_validate(position) if position else None,
             supervisor=EmployeeRead.model_validate(supervisor) if supervisor else None,
+            supervisor_name=supervisor_name,
             availability_status=availability,
             compliance=compliance,
             current_assignment=current,

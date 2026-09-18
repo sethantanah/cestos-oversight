@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     smtp_username: str | None = None
     smtp_password: SecretStr | None = None
     smtp_from: str | None = None
+    smtp_from_name: str | None = "Cestos Operations"
     smtp_starttls: bool = True
     smtp_use_ssl: bool = False
     public_base_url: str = "http://localhost:3000/sign-up-login"
@@ -45,6 +46,9 @@ class Settings(BaseSettings):
     supabase_auth_enabled: bool = False
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
+    enable_agent_logging: bool = True
+    agent_log_path: str = "logs/agent_execution.log"
+
 
     @field_validator("database_url")
     @classmethod

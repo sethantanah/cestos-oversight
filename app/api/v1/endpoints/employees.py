@@ -4,12 +4,14 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import request_storage, require_permission
+from app.core.dependencies import get_current_active_user, request_storage, require_permission, scoped_roles
+from app.core.exceptions import ForbiddenError
 from app.core.storage import LocalStorage
 from app.db.session import get_session
-from app.models import User
+from app.models import Employee, User
 from app.models.employee import (
     AvailabilityStatus,
     DocumentType,
@@ -117,6 +119,30 @@ rotations_router = APIRouter(prefix="/rotations", tags=["rotations"])
 authorizations_router = APIRouter(prefix="/employee-asset-authorizations", tags=["authorizations"])
 departments_router = APIRouter(prefix="/departments", tags=["departments"])
 positions_router = APIRouter(prefix="/positions", tags=["positions"])
+
+
+async def employee_document_reader(
+    employee_id: uuid.UUID,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> User:
+    """Allow a user to read their own contract/documents; others need the grant."""
+    if actor.is_superuser:
+        return actor
+    codes = {p.code for role in scoped_roles(actor) for p in role.permissions}
+    if codes.intersection({"employees.documents.read", "employees.contracts.read"}):
+        return actor
+    own = await session.scalar(
+        select(Employee.id).where(
+            Employee.id == employee_id,
+            Employee.organization_id == actor.organization_id,
+            Employee.user_id == actor.id,
+        ).execution_options(employee_self_service=True)
+    )
+    if own is None:
+        raise ForbiddenError("Employee document access is restricted")
+    session.info["employee_self_service"] = True
+    return actor
 
 
 @router.get("", response_model=Page[EmployeeRead])
@@ -350,6 +376,17 @@ async def cancel_employee_assignment(
     actor: User = Depends(require_permission("employees.assign")),
     session: AsyncSession = Depends(get_session),
 ) -> EmployeeAssignmentRead:
+    return await EmployeeService(session, actor).cancel_assignment(assignment_id, request)
+
+
+@assignments_router.delete("/{assignment_id}", response_model=EmployeeAssignmentRead)
+async def delete_employee_assignment(
+    assignment_id: uuid.UUID,
+    request: Request,
+    actor: User = Depends(require_permission("employees.assign")),
+    session: AsyncSession = Depends(get_session),
+) -> EmployeeAssignmentRead:
+    """Cancel an assignment while preserving its history and audit record."""
     return await EmployeeService(session, actor).cancel_assignment(assignment_id, request)
 
 
@@ -653,7 +690,7 @@ async def archive_resume(
 @router.get("/{employee_id}/documents", response_model=list[EmployeeDocumentRead])
 async def list_employee_documents(
     employee_id: uuid.UUID,
-    actor: User = Depends(require_permission("employees.documents.read")),
+    actor: User = Depends(employee_document_reader),
     session: AsyncSession = Depends(get_session),
 ) -> Sequence[EmployeeDocumentRead]:
     return await DocumentService(session, actor).list(employee_id)
@@ -710,7 +747,7 @@ async def upload_employee_document(
 async def download_employee_document(
     employee_id: uuid.UUID,
     document_id: uuid.UUID,
-    actor: User = Depends(require_permission("employees.documents.read")),
+    actor: User = Depends(employee_document_reader),
     session: AsyncSession = Depends(get_session),
     storage: LocalStorage = Depends(request_storage),
 ) -> FileResponse:
@@ -727,7 +764,7 @@ async def view_employee_document(
     employee_id: uuid.UUID,
     document_id: uuid.UUID,
     filename: str | None = None,
-    actor: User = Depends(require_permission("employees.documents.read")),
+    actor: User = Depends(employee_document_reader),
     session: AsyncSession = Depends(get_session),
     storage: LocalStorage = Depends(request_storage),
 ) -> FileResponse:
@@ -1193,4 +1230,3 @@ async def reject_leave_request(
         request,
     )
     return leave
-

@@ -98,17 +98,21 @@ class ProjectService:
 
         codes = {p.code for r in scoped_roles(self.actor) for p in r.permissions}
         if not self.actor.is_superuser and "projects.read_all" not in codes:
+            # Identity/access-grant lookups must not be filtered by the employee
+            # directory policy; otherwise a supervisor could fall through here.
+            employee_columns = Employee.__table__.c
             emp_id = await self.session.scalar(
-                select(Employee.id).where(
-                    Employee.user_id == self.actor.id,
-                    Employee.organization_id == self.actor.organization_id,
+                select(employee_columns.id).where(
+                    employee_columns.user_id == self.actor.id,
+                    employee_columns.organization_id == self.actor.organization_id,
                 )
             )
             if emp_id:
-                assigned_pids = select(EmployeeAssignment.project_id).where(
-                    EmployeeAssignment.employee_id == emp_id,
-                    EmployeeAssignment.organization_id == self.actor.organization_id,
-                    EmployeeAssignment.status == AssignmentStatus.ACTIVE,
+                assignment_columns = EmployeeAssignment.__table__.c
+                assigned_pids = select(assignment_columns.project_id).where(
+                    assignment_columns.employee_id == emp_id,
+                    assignment_columns.organization_id == self.actor.organization_id,
+                    assignment_columns.status == AssignmentStatus.ACTIVE,
                 )
                 query = query.where(
                     or_(

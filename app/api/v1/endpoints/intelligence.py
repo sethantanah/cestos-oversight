@@ -914,173 +914,43 @@ async def _save_chat_turn(
     except Exception:
         await session.rollback()
 
+def _log_agent_trace(
+    query: str,
+    first_action: str,
+    tool_calls_trace: list[dict[str, Any]],
+    status: str,
+    final_reply: str,
+) -> None:
+    """Log agent execution trace to file if enabled in config."""
+    try:
+        settings = get_settings()
+        enabled = getattr(settings, "enable_agent_logging", True)
+        if not enabled:
+            env_val = os.getenv("ENABLE_AGENT_LOGGING", "true").lower()
+            if env_val in ("false", "0", "no"):
+                return
 
-def _synthesize_intelligent_reply(
-    latest_user_message: str,
-    citations: list[dict[str, Any]],
-    db_tool_data: dict[str, Any]
-) -> str:
-    """Systematize raw document citations and database telemetry into a cohesive executive answer with clickable UI route links."""
-    lines = [f"### Executive Analysis for **\"{latest_user_message}\"**", ""]
-    q_lower = latest_user_message.lower()
+        log_path_str = getattr(settings, "agent_log_path", "logs/agent_execution.log")
+        log_path = Path(log_path_str)
+        if not log_path.is_absolute():
+            log_path = Path(__file__).resolve().parent.parent.parent.parent.parent / log_path_str
 
-    # Check for matched employee project assignments in db_tool_data
-    matched_assignments = []
-    for domain, data in db_tool_data.items():
-        if isinstance(data, dict) and "matched_employee_assignments" in data:
-            matched_assignments.extend(data["matched_employee_assignments"])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if matched_assignments:
-        lines.append("#### Personnel Project Assignment Telemetry")
-        for item in matched_assignments:
-            emp_name = item.get("employee_name", "Employee")
-            emp_id = item.get("employee_id")
-            title = item.get("job_title", "Staff")
-            dept = item.get("department", "General")
-            proj_name = item.get("assigned_project")
-            proj_id = item.get("project_id")
-            role = item.get("role_on_project", title)
-            status = item.get("assignment_status", "ACTIVE")
-            loc = item.get("location", "N/A")
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "query": query,
+            "first_action": first_action,
+            "tool_calls_count": len(tool_calls_trace),
+            "tool_calls": tool_calls_trace,
+            "status": status,
+            "final_reply_preview": final_reply[:300] if final_reply else "",
+        }
 
-            emp_link = f"[{emp_name}](/workspace/employees/{emp_id})" if emp_id else emp_name
-            if proj_name:
-                proj_link = f"[{proj_name}](/projects-overview)"
-                lines.append(f"- **Personnel**: {emp_link} ({title}, {dept})")
-                lines.append(f"  - **Assigned Project**: {proj_link}")
-                lines.append(f"  - **Project Role**: {role}")
-                lines.append(f"  - **Assignment Status**: **{status}**")
-                if loc and loc != "N/A":
-                    lines.append(f"  - **Location**: {loc}")
-                lines.append(f"  - **Quick Links**: [View Employee Record](/workspace/employees/{emp_id}) | [View Project Details](/projects-overview)")
-            else:
-                lines.append(f"- **Personnel**: {emp_link} ({title}, {dept})")
-                lines.append(f"  - **Assigned Project**: None")
-                lines.append(f"  - **Assignment Status**: **UNASSIGNED**")
-                lines.append(f"  - **Details**: {item.get('message', 'No active project assignment recorded in database.')}")
-            lines.append("")
-
-    # 1. Handle Skill / Personnel / Qualification / Resume Queries
-    if any(k in q_lower for k in ["skill", "computer", "software", "tech", "qualification", "resume", "cv", "who", "which employee"]):
-        lines.append("#### Identified Personnel & Technical Competencies")
-        
-        found_personnel = False
-        seen_names = set()
-
-        # Extract findings from document citations (resumes/CVs)
-        for c in citations:
-            snippet = c.get("snippet", "")
-            doc_title = c.get("document_title", c.get("file_name", "Document"))
-            file_name = c.get("file_name", doc_title)
-            
-            name = "Identified Personnel"
-            search_param = "Seth"
-            if "seth" in snippet.lower() or "seth" in doc_title.lower():
-                name = "Seth Antanah"
-                search_param = "Seth"
-            elif "demo" in snippet.lower():
-                name = "Demo Personnel"
-                search_param = "Demo"
-
-            if name in seen_names:
-                continue
-            seen_names.add(name)
-
-            summary_items = []
-            if "experience in" in snippet.lower():
-                exp_text = snippet.lower().split("experience in")[1].split(".")[0].strip()
-                summary_items.append(f"Documented experience in {exp_text}")
-            elif "professional summary" in snippet.lower():
-                exp_text = snippet.lower().split("professional summary")[1].split(".")[0].strip()
-                summary_items.append(exp_text[:180])
-            
-            if "bsc" in snippet.lower() or "education" in snippet.lower():
-                if "BSc" in snippet:
-                    summary_items.append("Education: BSc Degree")
-                elif "education" in snippet.lower():
-                    summary_items.append("Includes Higher Education Credentials")
-
-            details = "; ".join(summary_items) if summary_items else snippet[:220]
-            doc_id = c.get("document_id")
-            emp_id = c.get("employee_id")
-
-            doc_route = f"/documents?doc_id={doc_id}" if doc_id else f"/documents?q={file_name}"
-            emp_route = f"/workspace/employees/{emp_id}" if emp_id else f"/workspace/employees?search={search_param}"
-
-            lines.append(f"- **Personnel Profile**: [{name}]({emp_route})")
-            lines.append(f"  - **Source Document**: [{doc_title}]({doc_route}) ({c.get('location', 'Document Library')})")
-            lines.append(f"  - **Identified Qualifications**: {details}")
-            lines.append(f"  - **Quick Links**: [Open Employee Detail View]({emp_route}) | [Open Document Reader]({doc_route})")
-            lines.append("")
-            found_personnel = True
-
-        # Extract findings from database skill/qualification tables if present
-        for domain, data in db_tool_data.items():
-            if isinstance(data, dict) and "matching_personnel_skills_and_qualifications" in data:
-                for match_item in data["matching_personnel_skills_and_qualifications"]:
-                    if isinstance(match_item, dict):
-                        e_id = match_item.get("employee_id")
-                        e_disp = match_item.get("display")
-                        route = f"/workspace/employees/{e_id}" if e_id else "/workspace/employees"
-                        lines.append(f"- **Database Record**: [{e_disp}]({route})")
-                    else:
-                        emp_name = str(match_item).split(" (")[0] if " (" in str(match_item) else str(match_item).split(" — ")[0]
-                        first_word = emp_name.split()[0] if emp_name else ""
-                        lines.append(f"- **Database Record**: [{match_item}](/workspace/employees?search={first_word})")
-                    found_personnel = True
-
-        if not found_personnel and not matched_assignments:
-            lines.append("No specific personnel matching your requested skill criteria were found in the active database or document library.")
-            lines.append("")
-
-        lines.append("*Note: Complete source document excerpts are cited in the document panel below.*")
-        return "\n".join(lines)
-
-    # 2. Document Search Queries
-    if citations and not db_tool_data:
-        lines.append("#### Document Library Search Findings")
-        for c in citations:
-            doc_t = c['document_title']
-            f_n = c.get('file_name', doc_t)
-            d_id = c.get('document_id')
-            d_route = f"/documents?doc_id={d_id}" if d_id else f"/documents?q={f_n}"
-            lines.append(f"- **Document**: [{doc_t}]({d_route}) ({c['location']})")
-            lines.append(f"  > \"{c['snippet'][:280]}...\"")
-            lines.append(f"  - **Actions**: [Open Document Preview]({d_route})")
-            lines.append("")
-        return "\n".join(lines)
-
-    # 3. Operations & Telemetry Queries (When user explicitly asks for operational/fleet/project/inventory metrics)
-    if db_tool_data:
-        lines.append("#### Live Operational Telemetry")
-        for domain, data in db_tool_data.items():
-            if isinstance(data, dict):
-                lines.append(f"**Domain `{domain.capitalize()}` Metrics**:")
-                for k, v in data.items():
-                    if k not in ["first_project_id", "first_project_name", "skill_search_status", "matching_personnel_skills_and_qualifications", "matched_employee_assignments"]:
-                        lines.append(f"  - **{k.replace('_', ' ').title()}**: {v}")
-            else:
-                lines.append(f"  - {data}")
-        lines.append("")
-        if "workforce" in q_lower or "employee" in q_lower:
-            lines.append("- **Direct Link**: [View All Workforce Profiles](/workforce-overview)")
-        elif "fleet" in q_lower or "asset" in q_lower:
-            lines.append("- **Direct Link**: [View Fleet Dashboard](/fleet-dashboard)")
-        elif "inventory" in q_lower or "stock" in q_lower:
-            lines.append("- **Direct Link**: [View Inventory Overview](/inventory-overview)")
-        elif "project" in q_lower:
-            lines.append("- **Direct Link**: [View Project Overview](/projects-overview)")
-
-    # Recommendations if requested
-    if any(kw in q_lower for kw in ["recommend", "suggestion", "action", "plan", "advice", "next step"]):
-        lines.extend([
-            "#### Recommended Operations Action Plan",
-            "1. **Deployment & Shift Scheduling**: Ensure all assigned field personnel have verified safety clearances.",
-            "2. **Preventative Maintenance**: Cross-reference high hour-meter equipment against scheduled service intervals.",
-            "3. **Telemetry Tracking**: Monitor daily drilled meterage outputs against site target milestones.",
-        ])
-
-    return "\n".join(lines)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except Exception as e:
+        print(f"[Agent Logging Error]: {e}")
 
 
 @router.post("/assistant", dependencies=[Depends(require_permission("intelligence.read"))])
@@ -1089,110 +959,206 @@ async def assistant_chat(
     user: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_session),
 ) -> AssistantQueryResponse:
-    """Agentic Smart Assistant with 6-iteration loop, table schema auto-correction, live DB querying, vector search, and interactive filters."""
+    """Agentic Smart Assistant with OpenAI function-calling loop.
+
+    The LLM decides which tools to call, executes them via app.agents.tools,
+    and synthesizes answers from real database results.
+    """
+    from app.agents.tools import (
+        TOOL_DEFINITIONS,
+        execute_tool,
+        load_skills_prompt,
+    )
+
     if not req.messages:
         return AssistantQueryResponse(reply="Please provide a message query to begin assistant interaction.")
 
     latest_user_message = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
     tools_used: list[str] = []
-    citations: list[dict[str, Any]] = []
-    db_tool_data: dict[str, Any] = {}
+    tool_calls_trace: list[dict[str, Any]] = []
+    all_citations: list[dict[str, Any]] = []
     suggested_filters: dict[str, Any] = {}
-
-    MAX_ITERATIONS = 6
-    iteration = 0
-
-    # Agentic Tool Loop
-    while iteration < MAX_ITERATIONS:
-        iteration += 1
-
-        # Check document vector search intent
-        if (
-            any(kw in latest_user_message.lower() for kw in ["document", "file", "policy", "contract", "pdf", "manual", "search", "skill", "resume", "cv", "qualification", "certif", "computer", "experience", "training", "who", "which", "employee"])
-            and "search_document_vector_store" not in tools_used
-        ):
-            vec_results = await _execute_vector_search(latest_user_message, user, session)
-            tools_used.append("search_document_vector_store")
-            if vec_results:
-                citations.extend(vec_results)
-
-        # Check schema inspection intent or auto-correction
-        if any(kw in latest_user_message.lower() for kw in ["schema", "column", "table", "definition"]):
-            for domain_kw in ["employee", "asset", "project", "inventory", "department", "location"]:
-                if domain_kw in latest_user_message.lower():
-                    sch = inspect_table_schema(domain_kw)
-                    db_tool_data[f"schema_{domain_kw}"] = sch
-                    if "read_table_schemas" not in tools_used:
-                        tools_used.append("read_table_schemas")
-
-        # Check live DB query intent: suppress general headcount metrics on targeted skill/resume document searches
-        is_targeted_skill_doc_query = any(k in latest_user_message.lower() for k in ["skill", "computer", "software", "tech", "qualification", "resume", "cv", "policy", "contract", "pdf", "manual"])
-        
-        if not is_targeted_skill_doc_query or not citations:
-            for domain_kw in ["workforce", "employee", "fleet", "asset", "equipment", "project", "inventory", "stock", "salary", "payroll"]:
-                if domain_kw in latest_user_message.lower() and domain_kw not in db_tool_data:
-                    res = await _execute_db_tool(domain_kw, user, session, user_query=latest_user_message)
-                    db_tool_data[domain_kw] = res
-                    if "query_database_metrics" not in tools_used:
-                        tools_used.append("query_database_metrics")
-
-                    # If schema auto-correction occurred inside tool
-                    if res.get("status") == "auto_corrected" and "schema_auto_corrected" not in tools_used:
-                        tools_used.append("schema_auto_corrected")
-                        schema_fix = inspect_table_schema(domain_kw)
-                        db_tool_data[f"schema_{domain_kw}"] = schema_fix
-
-                    if res.get("first_project_id"):
-                        suggested_filters["project_id"] = res["first_project_id"]
-                        suggested_filters["project_name"] = res.get("first_project_name", "Selected Project")
-                    elif "workforce" in domain_kw or "employee" in domain_kw:
-                        suggested_filters["status"] = "ACTIVE"
-                        suggested_filters["label"] = "Active Personnel"
-                    elif "fleet" in domain_kw or "asset" in domain_kw:
-                        suggested_filters["status"] = "OPERATING"
-                        suggested_filters["label"] = "Operating Fleet"
-
-        # Break early if key tools executed
-        if tools_used or iteration >= 2:
-            break
-
-    # Extract suggested filters from projects list if available
-    if not suggested_filters and ("project" in latest_user_message.lower() or "drilling" in latest_user_message.lower()):
-        p_res = await session.execute(
-            select(Project.id, Project.name).where(Project.organization_id == user.organization_id, Project.archived_at.is_(None)).limit(1)
-        )
-        p_row = p_res.first()
-        if p_row:
-            suggested_filters = {"project_id": str(p_row[0]), "project_name": str(p_row[1])}
+    first_action: str = "Initializing reasoning"
 
     settings = get_settings()
     openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+
     if openai_key and len(openai_key) > 10:
         try:
             model_name = settings.openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+            # Build system prompt from skills.md
+            skills_text = load_skills_prompt()
             system_prompt = (
-                "You are Antigravity Smart Assistant, an executive operations intelligence assistant for Cestos Operations. "
-                "Executive operational decisions depend directly on your responses. You MUST maintain an absolute zero-hallucination policy:\n"
-                "1. All numerical metrics, counts, monetary values, percentages, and status figures MUST be derived strictly from the injected [Live Operations Context Injected] database telemetry or vector document citations.\n"
-                "2. Never guess, extrapolate, or assume unverified metrics. If requested telemetry data is not present in the live context, explicitly state: 'Telemetry data for this metric is not available in the database.'\n"
-                "3. Double-check all arithmetic and ratios before returning responses.\n"
-                "4. Format responses using clear markdown headers, bold key stats, bullet points, and tables.\n"
-                "5. Do NOT include unrequested recommendations or action plans unless the user explicitly asks for recommendations, suggestions, or an action plan."
+                f"{skills_text}\n\n"
+                "---\n"
+                "CRITICAL REMINDERS:\n"
+                "- All data you report MUST come from tool call results. Never guess or hallucinate.\n"
+                "- If specific requested data is not present in tool results, state clearly what was found and what was missing.\n"
+                "- Never use dummy template text (e.g. 'Telemetry data for this metric is not available... Total Workforce Headcount: 13'). Answer directly and accurately.\n"
+                "- Do NOT output raw technical metadata like 'Relevance Score: 0.75' or raw vector search scores in the response text.\n"
+                "- Include clean markdown navigation links for all entities using exact route patterns (e.g., [Seth Antanah](/workspace/employees/{id}), [Zodiac Gold](/project-command-center?project={id}), [Document Title](/documents?q=...)).\n"
+                "- Format responses with markdown: headers, bold stats, bullet points, tables.\n"
             )
 
-            prompt_messages = [{"role": "system", "content": system_prompt}]
+            prompt_messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
             for m in req.messages[-10:]:
                 prompt_messages.append({"role": m.role, "content": m.content})
 
-            if db_tool_data or citations:
-                context_addon = f"\n\n[Live Operations Context Injected]:\nTools Used: {tools_used}\nDB Data: {json.dumps(db_tool_data, default=str)}\nVector Citations: {json.dumps(citations, default=str)}"
-                prompt_messages[-1]["content"] += context_addon
+            MAX_ITERATIONS = 14
+            MAX_TOOL_CALLS = 20
+            iteration = 0
+            total_tool_calls = 0
+
+            while iteration < MAX_ITERATIONS and total_tool_calls < MAX_TOOL_CALLS:
+                iteration += 1
+
+                payload = json.dumps({
+                    "model": model_name,
+                    "messages": prompt_messages,
+                    "tools": TOOL_DEFINITIONS,
+                    "tool_choice": "auto",
+                    "temperature": 0.0,
+                    "max_tokens": 1500,
+                }).encode("utf-8")
+
+                api_req = urllib.request.Request(
+                    "https://api.openai.com/v1/chat/completions",
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {openai_key}",
+                    },
+                    method="POST",
+                )
+
+                with urllib.request.urlopen(api_req, timeout=45) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+
+                choice = resp_data["choices"][0]
+                message = choice["message"]
+                finish_reason = choice.get("finish_reason", "stop")
+
+                # Track first action
+                if first_action == "Initializing reasoning":
+                    if message.get("tool_calls"):
+                        t_names = [tc["function"]["name"] for tc in message["tool_calls"]]
+                        first_action = f"Tool call: {', '.join(t_names)}"
+                    else:
+                        first_action = "Direct response generation"
+
+                # If the model wants to call tools
+                if finish_reason == "tool_calls" or message.get("tool_calls"):
+                    prompt_messages.append(message)
+
+                    for tc in message.get("tool_calls", []):
+                        if total_tool_calls >= MAX_TOOL_CALLS:
+                            break
+
+                        total_tool_calls += 1
+                        fn_name = tc["function"]["name"]
+                        try:
+                            fn_args = json.loads(tc["function"]["arguments"])
+                        except (json.JSONDecodeError, KeyError):
+                            fn_args = {}
+
+                        tools_used.append(fn_name)
+
+                        # Execute the tool
+                        start_t = datetime.utcnow()
+                        tool_result = await execute_tool(
+                            fn_name, fn_args, user.organization_id, session
+                        )
+                        dur_ms = int((datetime.utcnow() - start_t).total_seconds() * 1000)
+
+                        status_str = "error" if "error" in tool_result else "success"
+                        tool_calls_trace.append({
+                            "iteration": iteration,
+                            "tool_call_id": tc["id"],
+                            "tool": fn_name,
+                            "args": fn_args,
+                            "status": status_str,
+                            "duration_ms": dur_ms,
+                        })
+
+                        # Collect citations from document searches
+                        if fn_name == "search_documents" and "results" in tool_result:
+                            for doc_hit in tool_result["results"]:
+                                doc_title = doc_hit.get("title", "") or doc_hit.get("file_name", "Document")
+                                doc_id = doc_hit.get("document_id") or ""
+                                all_citations.append({
+                                    "document_id": doc_id,
+                                    "employee_id": doc_hit.get("employee_id"),
+                                    "document_title": doc_title,
+                                    "file_name": doc_hit.get("file_name", ""),
+                                    "location": doc_hit.get("category", "Document Library"),
+                                    "snippet": doc_hit.get("snippet", ""),
+                                    "url": f"/documents?q={urllib.parse.quote(doc_title)}" if doc_title else "/documents",
+                                })
+
+                        # Build suggested filters from results
+                        if not suggested_filters:
+                            if fn_name == "get_project_details" and tool_result.get("projects"):
+                                p = tool_result["projects"][0]
+                                suggested_filters = {
+                                    "project_id": p.get("id"),
+                                    "project_name": p.get("name", "Project"),
+                                }
+                            elif fn_name == "get_employee_details":
+                                suggested_filters = {"status": "ACTIVE", "label": "Active Personnel"}
+                            elif fn_name == "get_fleet_summary":
+                                suggested_filters = {"status": "OPERATING", "label": "Operating Fleet"}
+
+                        # Append tool result as a tool message
+                        result_str = json.dumps(tool_result, default=str)
+                        if len(result_str) > 8000:
+                            result_str = result_str[:8000] + '..."]}'
+
+                        prompt_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result_str,
+                        })
+
+                    continue
+
+                # No tool calls — model produced final text response
+                reply_text = message.get("content", "")
+                if not reply_text:
+                    reply_text = "I was unable to generate a response. Please try rephrasing your question."
+
+                tools_used = list(dict.fromkeys(tools_used)) or ["smart_assistant"]
+
+                _log_agent_trace(
+                    latest_user_message, first_action, tool_calls_trace, "success", reply_text
+                )
+
+                await _save_chat_turn(
+                    user, session, latest_user_message, reply_text,
+                    all_citations, tools_used, suggested_filters or None,
+                )
+                return AssistantQueryResponse(
+                    reply=reply_text,
+                    conversation_id=req.conversation_id,
+                    citations=all_citations,
+                    tools_used=tools_used,
+                    suggested_filters=suggested_filters or None,
+                )
+
+            # Reached max iterations or max tool calls: synthesize current evaluation + add follow-up question
+            synth_prompt = (
+                "You have reached the maximum allowed tool calls/iterations. Evaluate all tool call data gathered so far and synthesize a complete response answering the user's question as thoroughly as possible with what you have.\n\n"
+                "CRITICAL INSTRUCTION: At the end of your answer, add a section:\n"
+                "### Suggested Follow-up Question\n"
+                "Provide 1 specific follow-up question the user can ask to help you continue or dig deeper into any missing details."
+            )
+            prompt_messages.append({"role": "user", "content": synth_prompt})
 
             payload = json.dumps({
                 "model": model_name,
                 "messages": prompt_messages,
                 "temperature": 0.0,
-                "max_tokens": 800,
+                "max_tokens": 1500,
             }).encode("utf-8")
 
             api_req = urllib.request.Request(
@@ -1205,33 +1171,116 @@ async def assistant_chat(
                 method="POST",
             )
 
-            with urllib.request.urlopen(api_req, timeout=30) as resp:
+            with urllib.request.urlopen(api_req, timeout=45) as resp:
                 resp_data = json.loads(resp.read().decode("utf-8"))
-                reply_text = resp_data["choices"][0]["message"]["content"]
-                await _save_chat_turn(user, session, latest_user_message, reply_text, citations, tools_used or ["query_database_metrics"], suggested_filters or None)
-                return AssistantQueryResponse(
-                    reply=reply_text,
-                    conversation_id=req.conversation_id,
-                    citations=citations,
-                    tools_used=tools_used or ["query_database_metrics"],
-                    suggested_filters=suggested_filters or None,
-                )
+
+            reply_text = resp_data["choices"][0]["message"].get("content", "")
+            if not reply_text:
+                reply_text = "I reached the execution limit while processing your request. Here is the summary of data gathered so far."
+
+            tools_used = list(dict.fromkeys(tools_used)) or ["smart_assistant"]
+
+            _log_agent_trace(
+                latest_user_message, first_action, tool_calls_trace, "max_limit_reached", reply_text
+            )
+
+            await _save_chat_turn(
+                user, session, latest_user_message, reply_text,
+                all_citations, tools_used, suggested_filters or None,
+            )
+            return AssistantQueryResponse(
+                reply=reply_text,
+                conversation_id=req.conversation_id,
+                citations=all_citations,
+                tools_used=tools_used,
+                suggested_filters=suggested_filters or None,
+            )
+
         except Exception as err:
-            print(f"[OpenAI API Call Error]: {err}")
-            raise Exception(f"[OpenAI API Call Error]: {err}")
+            print(f"[Smart Assistant Error]: {err}")
+            _log_agent_trace(
+                latest_user_message, first_action, tool_calls_trace, f"error: {err}", ""
+            )
 
-    # Built-in Agentic Synthesis Engine (when OPENAI_API_KEY is not configured or on network error)
-    if not db_tool_data and not citations:
-        db_tool_data["overview"] = await _execute_db_tool("fleet", user, session)
-        tools_used.append("query_database_metrics")
+    # -----------------------------------------------------------------------
+    # Fallback: No OpenAI key or API error
+    # -----------------------------------------------------------------------
+    from app.agents.tools import execute_tool
 
-    final_reply = _synthesize_intelligent_reply(latest_user_message, citations, db_tool_data)
-    await _save_chat_turn(user, session, latest_user_message, final_reply, citations, tools_used or ["query_database_metrics"], suggested_filters or None)
+    fallback_data: dict[str, Any] = {}
+    q_lower = latest_user_message.lower()
+
+    tool_calls: list[tuple[str, dict[str, Any]]] = []
+
+    if any(kw in q_lower for kw in ["employee", "staff", "workforce", "personnel", "who", "department", "hr"]):
+        tool_calls.append(("get_employee_details", {"include_assignments": True}))
+    if any(kw in q_lower for kw in ["fleet", "asset", "equipment", "vehicle"]):
+        tool_calls.append(("get_fleet_summary", {"include_fuel": True, "include_maintenance": True}))
+    if any(kw in q_lower for kw in ["project", "site", "drilling"]):
+        tool_calls.append(("get_project_details", {"include_assignments": True}))
+    if any(kw in q_lower for kw in ["inventory", "stock", "store"]):
+        tool_calls.append(("get_inventory_summary", {}))
+    if any(kw in q_lower for kw in ["salary", "payroll", "financial", "cost", "fuel"]):
+        tool_calls.append(("get_financial_summary", {}))
+    if any(kw in q_lower for kw in ["document", "file", "cv", "resume", "policy"]):
+        tool_calls.append(("search_documents", {"query": latest_user_message}))
+
+    if not tool_calls:
+        tool_calls = [
+            ("get_employee_details", {"limit": 5}),
+            ("get_fleet_summary", {}),
+        ]
+
+    for tool_name, tool_args in tool_calls:
+        result = await execute_tool(tool_name, tool_args, user.organization_id, session)
+        fallback_data[tool_name] = result
+        tools_used.append(tool_name)
+
+    lines = [f"### Query: **\"{latest_user_message}\"**", ""]
+    lines.append("> **Note**: Responses are generated from raw database queries (AI synthesis unavailable).")
+    lines.append("")
+
+    for tool_name, data in fallback_data.items():
+        lines.append(f"#### {tool_name.replace('_', ' ').title()}")
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(v, list) and len(v) > 5:
+                    lines.append(f"- **{k.replace('_', ' ').title()}**: {len(v)} items (showing first 5)")
+                    for item in v[:5]:
+                        if isinstance(item, dict):
+                            summary = ", ".join(f"{ik}: {iv}" for ik, iv in list(item.items())[:4])
+                            lines.append(f"  - {summary}")
+                        else:
+                            lines.append(f"  - {item}")
+                elif isinstance(v, list):
+                    lines.append(f"- **{k.replace('_', ' ').title()}**:")
+                    for item in v:
+                        if isinstance(item, dict):
+                            summary = ", ".join(f"{ik}: {iv}" for ik, iv in list(item.items())[:4])
+                            lines.append(f"  - {summary}")
+                        else:
+                            lines.append(f"  - {item}")
+                else:
+                    lines.append(f"- **{k.replace('_', ' ').title()}**: {v}")
+        lines.append("")
+
+    lines.append("### Suggested Follow-up Question")
+    lines.append("Would you like to search for specific items, projects, or personnel records in detail?")
+
+    final_reply = "\n".join(lines)
+    tools_used = list(dict.fromkeys(tools_used)) or ["fallback_query"]
+
+    await _save_chat_turn(
+        user, session, latest_user_message, final_reply,
+        all_citations, tools_used, suggested_filters or None,
+    )
 
     return AssistantQueryResponse(
         reply=final_reply,
         conversation_id=req.conversation_id,
-        citations=citations,
+        citations=all_citations,
         tools_used=tools_used,
         suggested_filters=suggested_filters or None,
     )
+
+

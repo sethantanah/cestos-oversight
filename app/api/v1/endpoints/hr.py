@@ -515,6 +515,8 @@ async def complete_reset(body: PasswordReset, session: AsyncSession = Depends(ge
 
 
 async def own_employee(session: AsyncSession, actor: User, lock: bool = False) -> Employee:
+    # Only this authenticated self-service path includes the caller's profile.
+    session.info["employee_self_service"] = True
     query = select(Employee).where(
         Employee.user_id == actor.id,
         Employee.organization_id == actor.organization_id,
@@ -627,7 +629,7 @@ async def access(
             await session.scalar(
                 select(Employee.id).where(
                     Employee.user_id == actor.id, Employee.organization_id == actor.organization_id
-                )
+                ).execution_options(employee_self_service=True)
             )
         ),
     }

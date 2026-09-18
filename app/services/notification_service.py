@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, ValidationError
@@ -346,42 +346,61 @@ class NotificationService:
 
         alerts_to_emit: list[str] = []
 
+        inventory_query = None
+        if "CONSUMABLE" in rule_type or "EXPIRY" in rule_type or "LOW_STOCK" in rule_type:
+            item_model = inv_models.InventoryItem
+            balance = inv_models.InventoryBalance
+            unit = inv_models.UnitOfMeasure
+            stock = (
+                select(func.coalesce(func.sum(balance.quantity_on_hand), 0))
+                .where(
+                    balance.item_id == item_model.id,
+                    balance.organization_id == schedule.organization_id,
+                )
+                .correlate(item_model)
+                .scalar_subquery()
+            )
+            inventory_query = (
+                select(item_model, stock.label("quantity_on_hand"), unit.symbol)
+                .join(
+                    unit,
+                    (unit.id == item_model.base_unit_id)
+                    & (unit.organization_id == schedule.organization_id),
+                )
+                .where(
+                    item_model.organization_id == schedule.organization_id,
+                    item_model.is_active.is_(True),
+                )
+            )
+
         if "CONSUMABLE" in rule_type or "EXPIRY" in rule_type:
             # Check inventory items expiring by lead_date
-            items = (
-                await self.session.scalars(
-                    select(inv_models.InventoryItem).where(
-                        inv_models.InventoryItem.organization_id == schedule.organization_id,
-                        inv_models.InventoryItem.is_active.is_(True),
-                    )
-                )
-            ).all()
+            assert inventory_query is not None
+            items = (await self.session.execute(inventory_query)).all()
 
-            for item in items:
+            for item, quantity_on_hand, unit_symbol in items:
                 # If item has expiry_date or category indicates consumable
                 msg = (
                     f"[{schedule.priority_tag}] Consumable Item Alert: '{item.name}' "
-                    f"(SKU/Code: {item.code}) is scheduled for inspection/expiry within {schedule.lead_time_days} days. "
-                    f"Current Stock: {item.quantity_on_hand} {item.unit_of_measure}."
+                    f"(SKU/Code: {item.sku or item.item_number}) is scheduled for inspection/expiry "
+                    f"within {schedule.lead_time_days} days. "
+                    f"Current Stock: {quantity_on_hand} {unit_symbol}."
                 )
                 alerts_to_emit.append(msg)
 
         elif "LOW_STOCK" in rule_type:
+            assert inventory_query is not None
             items = (
-                await self.session.scalars(
-                    select(inv_models.InventoryItem).where(
-                        inv_models.InventoryItem.organization_id == schedule.organization_id,
-                        inv_models.InventoryItem.is_active.is_(True),
-                        inv_models.InventoryItem.quantity_on_hand
-                        <= inv_models.InventoryItem.reorder_point,
-                    )
+                await self.session.execute(
+                    inventory_query.where(stock <= inv_models.InventoryItem.reorder_point)
                 )
             ).all()
-            for item in items:
+            for item, quantity_on_hand, unit_symbol in items:
                 msg = (
                     f"[{schedule.priority_tag}] Low Stock Alert: '{item.name}' "
-                    f"(Code: {item.code}) has reached reorder point! Current: {item.quantity_on_hand} "
-                    f"{item.unit_of_measure} (Reorder Point: {item.reorder_point})."
+                    f"(Code: {item.sku or item.item_number}) has reached reorder point! "
+                    f"Current: {quantity_on_hand} {unit_symbol} "
+                    f"(Reorder Point: {item.reorder_point})."
                 )
                 alerts_to_emit.append(msg)
 

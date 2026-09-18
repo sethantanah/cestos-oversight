@@ -94,6 +94,12 @@ def require_permission(code: str) -> Callable[..., Coroutine[Any, Any, User]]:
             "projects.financials.read": "projects.read",
             "intelligence.read": "projects.read",
             "roles.manage": "users.create",
+            "employees.contracts.read": "employees.documents.read",
+            "employees.contracts.write": "employees.documents.manage",
+            "employees.salary.write": "employees.salary.manage",
+            "projects.read_assigned": "projects.read",
+            "assets.read_assigned": "assets.read",
+            "inventory.read_assigned": "inventory.read",
         }.get(code, code)
         if not user_perms.intersection({code, alias}):
             raise ForbiddenError("Required permission is missing")

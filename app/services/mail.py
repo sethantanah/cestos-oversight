@@ -6,6 +6,7 @@ import smtplib
 import ssl
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
+from email.utils import formataddr
 
 import structlog
 from fastapi import FastAPI
@@ -20,29 +21,54 @@ from app.models.hr import EmailDelivery, PasswordSetup
 from app.services.hr import generate_alerts
 
 
-def send_email(settings: Settings, to: str, subject: str, body: str) -> None:
-    if not settings.smtp_host or not settings.smtp_from:
-        raise ValueError("SMTP_HOST and SMTP_FROM are required")
+def send_email(
+    settings: Settings,
+    to: str,
+    subject: str,
+    body: str,
+    html_body: str | None = None,
+    sender_email: str | None = None,
+    sender_password: str | None = None,
+    sender_name: str | None = None,
+) -> None:
+    smtp_host = settings.smtp_host
+    if not smtp_host:
+        raise ValueError("SMTP_HOST is required in server settings")
+
+    from_address = sender_email or settings.smtp_from
+    if not from_address:
+        raise ValueError("Sender email address is required")
+
+    from_name = sender_name or settings.smtp_from_name
+    login_username = sender_email or settings.smtp_username
+    login_password = sender_password if sender_password is not None else (
+        settings.smtp_password.get_secret_value() if settings.smtp_password else ""
+    )
+
     message = EmailMessage()
-    message["From"] = settings.smtp_from
+    if from_name:
+        message["From"] = formataddr((from_name, from_address))
+    else:
+        message["From"] = from_address
     message["To"] = to
     message["Subject"] = subject
-    message.set_content(body)
+    if html_body:
+        message.set_content(body or "Please view this email in an HTML-compatible email client.")
+        message.add_alternative(html_body, subtype="html")
+    else:
+        message.set_content(body)
     connection = (
         smtplib.SMTP_SSL(
-            settings.smtp_host, settings.smtp_port, timeout=15, context=ssl.create_default_context()
+            smtp_host, settings.smtp_port, timeout=15, context=ssl.create_default_context()
         )
         if settings.smtp_use_ssl
-        else smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15)
+        else smtplib.SMTP(smtp_host, settings.smtp_port, timeout=15)
     )
     with connection as smtp:
         if settings.smtp_starttls and not settings.smtp_use_ssl:
             smtp.starttls(context=ssl.create_default_context())
-        if settings.smtp_username:
-            smtp.login(
-                settings.smtp_username,
-                settings.smtp_password.get_secret_value() if settings.smtp_password else "",
-            )
+        if login_username:
+            smtp.login(login_username, login_password)
         smtp.send_message(message)
 
 

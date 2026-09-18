@@ -21,11 +21,14 @@ def is_document_admin(actor):
 
 
 def personal_scope(actor):
+    # Ownership is independent of workforce directory scope (including one's own
+    # profile). Read only identity columns when resolving document ownership.
+    employee = Employee.__table__.c
     return or_(
         D.owner_id == actor.id,
         D.employee_id.in_(
-            select(Employee.id).where(
-                Employee.organization_id == actor.organization_id, Employee.user_id == actor.id
+            select(employee.id).where(
+                employee.organization_id == actor.organization_id, employee.user_id == actor.id
             )
         ),
     )
