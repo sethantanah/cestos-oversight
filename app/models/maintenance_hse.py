@@ -95,10 +95,10 @@ class MaintenanceWorkOrder(UUIDMixin, TimestampMixin, OrganizationMixin, Archive
 
     title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text)
-    work_type: Mapped[WorkOrderType] = mapped_column(Enum(WorkOrderType, name="wo_type"), default=WorkOrderType.CORRECTIVE)
-    priority: Mapped[WorkOrderPriority] = mapped_column(Enum(WorkOrderPriority, name="wo_priority"), default=WorkOrderPriority.MEDIUM)
-    status: Mapped[WorkOrderStatus] = mapped_column(Enum(WorkOrderStatus, name="wo_status"), default=WorkOrderStatus.OPEN)
-    failure_taxonomy: Mapped[FailureTaxonomy | None] = mapped_column(Enum(FailureTaxonomy, name="failure_taxonomy"))
+    work_type: Mapped[WorkOrderType] = mapped_column(Enum(WorkOrderType, name="wo_type", native_enum=False), default=WorkOrderType.CORRECTIVE)
+    priority: Mapped[WorkOrderPriority] = mapped_column(Enum(WorkOrderPriority, name="wo_priority", native_enum=False), default=WorkOrderPriority.MEDIUM)
+    status: Mapped[WorkOrderStatus] = mapped_column(Enum(WorkOrderStatus, name="wo_status", native_enum=False), default=WorkOrderStatus.OPEN)
+    failure_taxonomy: Mapped[FailureTaxonomy | None] = mapped_column(Enum(FailureTaxonomy, name="failure_taxonomy", native_enum=False))
 
     root_cause: Mapped[str | None] = mapped_column(Text)
     remedy: Mapped[str | None] = mapped_column(Text)
@@ -147,9 +147,9 @@ class HseIncident(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Ac
 
     incident_number: Mapped[str] = mapped_column(String(50))
     title: Mapped[str] = mapped_column(String(200))
-    incident_type: Mapped[HseIncidentType] = mapped_column(Enum(HseIncidentType, name="hse_incident_type"))
-    severity: Mapped[HseSeverity] = mapped_column(Enum(HseSeverity, name="hse_severity"), default=HseSeverity.MEDIUM)
-    status: Mapped[HseIncidentStatus] = mapped_column(Enum(HseIncidentStatus, name="hse_incident_status"), default=HseIncidentStatus.REPORTED)
+    incident_type: Mapped[HseIncidentType] = mapped_column(Enum(HseIncidentType, name="hse_incident_type", native_enum=False))
+    severity: Mapped[HseSeverity] = mapped_column(Enum(HseSeverity, name="hse_severity", native_enum=False), default=HseSeverity.MEDIUM)
+    status: Mapped[HseIncidentStatus] = mapped_column(Enum(HseIncidentStatus, name="hse_incident_status", native_enum=False), default=HseIncidentStatus.REPORTED)
 
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), index=True)
@@ -180,7 +180,7 @@ class HseCorrectiveAction(UUIDMixin, TimestampMixin, OrganizationMixin, ActorMix
     description: Mapped[str] = mapped_column(Text)
     assigned_to_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), index=True)
     due_date: Mapped[date] = mapped_column(Date)
-    status: Mapped[HseActionStatus] = mapped_column(Enum(HseActionStatus, name="hse_action_status"), default=HseActionStatus.OPEN)
+    status: Mapped[HseActionStatus] = mapped_column(Enum(HseActionStatus, name="hse_action_status", native_enum=False), default=HseActionStatus.OPEN)
 
     closure_notes: Mapped[str | None] = mapped_column(Text)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -71,7 +71,7 @@ class DrillingProgram(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin
     code: Mapped[str | None] = mapped_column(String(50))
     target_metres: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     status: Mapped[DrillingProgramStatus] = mapped_column(
-        Enum(DrillingProgramStatus, name="drilling_program_status"),
+        Enum(DrillingProgramStatus, name="drilling_program_status", native_enum=False),
         default=DrillingProgramStatus.PLANNING,
     )
     start_date: Mapped[date | None] = mapped_column(Date)
@@ -97,7 +97,7 @@ class DrillHole(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Acto
     azimuth_deg: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     dip_deg: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     status: Mapped[DrillHoleStatus] = mapped_column(
-        Enum(DrillHoleStatus, name="drill_hole_status"),
+        Enum(DrillHoleStatus, name="drill_hole_status", native_enum=False),
         default=DrillHoleStatus.PLANNED,
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -121,11 +121,11 @@ class DrillingShiftReport(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveM
     program_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("drilling_programs.id"), index=True)
     date: Mapped[date] = mapped_column(Date, index=True)
     shift_type: Mapped[ShiftType] = mapped_column(
-        Enum(ShiftType, name="shift_type"), default=ShiftType.DAY
+        Enum(ShiftType, name="shift_type", native_enum=False), default=ShiftType.DAY
     )
     supervisor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"))
     status: Mapped[ShiftReportStatus] = mapped_column(
-        Enum(ShiftReportStatus, name="shift_report_status"),
+        Enum(ShiftReportStatus, name="shift_report_status", native_enum=False),
         default=ShiftReportStatus.DRAFT,
         index=True,
     )
@@ -192,7 +192,7 @@ class DrillingShiftTimeSegment(UUIDMixin, TimestampMixin, OrganizationMixin, Bas
     )
 
     shift_report_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("drilling_shift_reports.id", ondelete="CASCADE"), index=True)
-    category: Mapped[TimeCategory] = mapped_column(Enum(TimeCategory, name="time_category"))
+    category: Mapped[TimeCategory] = mapped_column(Enum(TimeCategory, name="time_category", native_enum=False))
     reason_code: Mapped[str] = mapped_column(String(100))
     hours: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     comments: Mapped[str | None] = mapped_column(SAText)

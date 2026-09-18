@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def postgres_only(cls, value: str) -> str:
-        if make_url(value).drivername != "postgresql+psycopg":
-            raise ValueError("DATABASE_URL must use postgresql+psycopg")
+        if make_url(value).drivername not in ("postgresql+psycopg", "postgresql+asyncpg"):
+            raise ValueError("DATABASE_URL must use postgresql+psycopg or postgresql+asyncpg")
         return value
 
     @field_validator("jwt_secret_key")

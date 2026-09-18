@@ -104,12 +104,70 @@ async def get_ceo_control_tower_summary(
     net_contribution = total_rev - total_cost
     margin_pct = (net_contribution / total_rev * Decimal("100.0")) if total_rev > 0 else Decimal("0.0")
 
+    # Project-level revenue
+    proj_rev_stmt = (
+        select(
+            RevenueSubledgerEntry.project_id,
+            func.coalesce(
+                func.sum(RevenueSubledgerEntry.total_revenue_base), 0
+            ),
+        )
+        .where(RevenueSubledgerEntry.organization_id == organization_id)
+        .group_by(RevenueSubledgerEntry.project_id)
+    )
+    proj_rev_rows = (await session.execute(proj_rev_stmt)).all()
+    rev_by_proj = {row[0]: Decimal(str(row[1])) for row in proj_rev_rows if row[0]}
+
+    # Project-level cost
+    proj_cost_stmt = (
+        select(
+            CostSubledgerEntry.project_id,
+            func.coalesce(
+                func.sum(CostSubledgerEntry.total_cost_base), 0
+            ),
+        )
+        .where(CostSubledgerEntry.organization_id == organization_id)
+        .group_by(CostSubledgerEntry.project_id)
+    )
+    proj_cost_rows = (await session.execute(proj_cost_stmt)).all()
+    cost_by_proj = {row[0]: Decimal(str(row[1])) for row in proj_cost_rows if row[0]}
+
+    # Project-level metres
+    proj_metres_stmt = (
+        select(
+            DrillingShiftReport.project_id,
+            func.coalesce(
+                func.sum(DrillingShiftReport.total_metres), 0
+            ),
+        )
+        .where(
+            DrillingShiftReport.organization_id == organization_id,
+            DrillingShiftReport.status == "APPROVED",
+            DrillingShiftReport.archived_at.is_(None),
+        )
+        .group_by(DrillingShiftReport.project_id)
+    )
+    proj_metres_rows = (await session.execute(proj_metres_stmt)).all()
+    metres_by_proj = {row[0]: Decimal(str(row[1])) for row in proj_metres_rows if row[0]}
+
     project_summaries = []
     for p in projects:
+        p_rev = rev_by_proj.get(p.id, Decimal("0.0"))
+        p_cost = cost_by_proj.get(p.id, Decimal("0.0"))
+        p_metres = metres_by_proj.get(p.id, Decimal("0.0"))
+        p_contrib = p_rev - p_cost
+        p_margin = (p_contrib / p_rev * Decimal("100.0")) if p_rev > 0 else Decimal("0.0")
+
         project_summaries.append({
             "project_id": str(p.id),
             "project_name": p.name,
             "status": p.status.value if hasattr(p.status, "value") else str(p.status),
+            "revenue": float(p_rev),
+            "direct_cost": float(p_cost),
+            "contribution": float(p_contrib),
+            "net_contribution": float(p_contrib),
+            "metres_drilled": float(p_metres),
+            "contribution_margin_pct": round(float(p_margin), 2),
         })
 
     return CeoControlTowerSummaryResponse(

@@ -71,7 +71,7 @@ class CommercialOpportunity(UUIDMixin, TimestampMixin, OrganizationMixin, Archiv
     opportunity_number: Mapped[str] = mapped_column(String(50))
     client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id"), index=True)
     title: Mapped[str] = mapped_column(String(200))
-    tender_stage: Mapped[TenderStage] = mapped_column(Enum(TenderStage, name="tender_stage"), default=TenderStage.PROSPECT)
+    tender_stage: Mapped[TenderStage] = mapped_column(Enum(TenderStage, name="tender_stage", native_enum=False), default=TenderStage.PROSPECT)
     win_probability_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("50.0"))
     estimated_value: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.0"))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
@@ -99,7 +99,7 @@ class ClientPublishedArtifact(UUIDMixin, TimestampMixin, OrganizationMixin, Base
 
     client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id"), index=True)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), index=True)
-    artifact_type: Mapped[ClientArtifactType] = mapped_column(Enum(ClientArtifactType, name="client_artifact_type"))
+    artifact_type: Mapped[ClientArtifactType] = mapped_column(Enum(ClientArtifactType, name="client_artifact_type", native_enum=False))
     entity_id: Mapped[uuid.UUID] = mapped_column()
     title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text)

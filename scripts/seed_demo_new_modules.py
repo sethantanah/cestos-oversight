@@ -319,105 +319,115 @@ async def seed_new_modules(session: AsyncSession) -> None:
         )
         await session.flush()
 
-    # 5. Financial Subledger Entries (Revenue & Cost)
-    has_rev = (
-        await session.scalars(
-            select(RevenueSubledgerEntry).where(
-                RevenueSubledgerEntry.organization_id == ORGANIZATION_ID,
-                RevenueSubledgerEntry.project_id == project.id,
+    # 5. Financial Subledger Entries & Shifts across all Project Sites
+    all_projects = list(
+        (
+            await session.scalars(
+                select(Project).where(
+                    Project.organization_id == ORGANIZATION_ID,
+                    Project.archived_at.is_(None),
+                )
             )
-        )
-    ).first()
-    if not has_rev:
-        session.add_all(
-            [
-                RevenueSubledgerEntry(
-                    organization_id=ORGANIZATION_ID,
-                    project_id=project.id,
-                    rig_id=rig.id,
-                    contract_id=contract.id,
-                    shift_report_id=shift1.id,
-                    revenue_category=RevenueCategory.DRILLING_METERAGE,
-                    description="120.5m RC Drilling Revenue (DS-2026-001)",
-                    quantity=Decimal("120.50"),
-                    unit_rate=Decimal("65.00"),
-                    total_revenue=Decimal("7832.50"),
-                    total_revenue_base=Decimal("7832.50"),
-                    currency="USD",
-                    posted_at=datetime(2026, 2, 10, 18, 0, tzinfo=UTC),
-                ),
-                RevenueSubledgerEntry(
-                    organization_id=ORGANIZATION_ID,
-                    project_id=project.id,
-                    rig_id=rig.id,
-                    contract_id=contract.id,
-                    shift_report_id=shift1.id,
-                    revenue_category=RevenueCategory.STANDBY_TIME,
-                    description="1.0h Standby Time Revenue (DS-2026-001)",
-                    quantity=Decimal("1.00"),
-                    unit_rate=Decimal("150.00"),
-                    total_revenue=Decimal("150.00"),
-                    total_revenue_base=Decimal("150.00"),
-                    currency="USD",
-                    posted_at=datetime(2026, 2, 10, 18, 0, tzinfo=UTC),
-                ),
-            ]
-        )
+        ).all()
+    )
 
-    has_cost = (
-        await session.scalars(
-            select(CostSubledgerEntry).where(
-                CostSubledgerEntry.organization_id == ORGANIZATION_ID,
-                CostSubledgerEntry.project_id == project.id,
+    sample_metrics = [
+        {"rev": Decimal("18450.00"), "cost": Decimal("11200.00"), "metres": Decimal("284.00")},
+        {"rev": Decimal("24600.00"), "cost": Decimal("14800.00"), "metres": Decimal("378.00")},
+        {"rev": Decimal("15200.00"), "cost": Decimal("8900.00"), "metres": Decimal("230.00")},
+        {"rev": Decimal("12800.00"), "cost": Decimal("7600.00"), "metres": Decimal("195.00")},
+        {"rev": Decimal("21300.00"), "cost": Decimal("12500.00"), "metres": Decimal("325.00")},
+        {"rev": Decimal("16700.00"), "cost": Decimal("9800.00"), "metres": Decimal("256.00")},
+        {"rev": Decimal("19500.00"), "cost": Decimal("11900.00"), "metres": Decimal("300.00")},
+        {"rev": Decimal("14200.00"), "cost": Decimal("8400.00"), "metres": Decimal("218.00")},
+        {"rev": Decimal("11500.00"), "cost": Decimal("6900.00"), "metres": Decimal("177.00")},
+    ]
+
+    for idx, p in enumerate(all_projects):
+        metrics = sample_metrics[idx % len(sample_metrics)]
+
+        # Ensure approved shift report exists for metres
+        has_proj_shift = (
+            await session.scalars(
+                select(DrillingShiftReport).where(
+                    DrillingShiftReport.organization_id == ORGANIZATION_ID,
+                    DrillingShiftReport.project_id == p.id,
+                )
             )
-        )
-    ).first()
-    if not has_cost:
-        session.add_all(
-            [
+        ).first()
+        if not has_proj_shift:
+            session.add(
+                DrillingShiftReport(
+                    organization_id=ORGANIZATION_ID,
+                    project_id=p.id,
+                    rig_id=rig.id,
+                    program_id=prog.id,
+                    report_number=f"DS-2026-P{idx+1:03d}",
+                    date=date(2026, 2, 10 + (idx % 15)),
+                    shift_type=ShiftType.DAY,
+                    total_metres=metrics["metres"],
+                    avg_core_recovery_pct=Decimal("95.50"),
+                    total_productive_hours=Decimal("10.00"),
+                    total_nonproductive_hours=Decimal("2.00"),
+                    status=ShiftReportStatus.APPROVED,
+                    supervisor_id=employee.id if employee else None,
+                )
+            )
+
+        # Revenue
+        has_p_rev = (
+            await session.scalars(
+                select(RevenueSubledgerEntry).where(
+                    RevenueSubledgerEntry.organization_id == ORGANIZATION_ID,
+                    RevenueSubledgerEntry.project_id == p.id,
+                )
+            )
+        ).first()
+        if not has_p_rev:
+            session.add(
+                RevenueSubledgerEntry(
+                    organization_id=ORGANIZATION_ID,
+                    project_id=p.id,
+                    rig_id=rig.id,
+                    contract_id=contract.id,
+                    revenue_category=RevenueCategory.DRILLING_METERAGE,
+                    description=f"{metrics['metres']}m RC Drilling Revenue ({p.name})",
+                    quantity=metrics["metres"],
+                    unit_rate=metrics["rev"] / metrics["metres"],
+                    total_revenue=metrics["rev"],
+                    total_revenue_base=metrics["rev"],
+                    currency="USD",
+                    posted_at=datetime(2026, 2, 10, 18, 0, tzinfo=UTC),
+                )
+            )
+
+        # Cost
+        has_p_cost = (
+            await session.scalars(
+                select(CostSubledgerEntry).where(
+                    CostSubledgerEntry.organization_id == ORGANIZATION_ID,
+                    CostSubledgerEntry.project_id == p.id,
+                )
+            )
+        ).first()
+        if not has_p_cost:
+            session.add(
                 CostSubledgerEntry(
                     organization_id=ORGANIZATION_ID,
-                    project_id=project.id,
+                    project_id=p.id,
                     rig_id=rig.id,
                     cost_category=CostCategory.FUEL,
-                    description="Diesel fuel burn for Rig CDR-001 (1,250L)",
-                    quantity=Decimal("1250.00"),
-                    unit_of_measure="LITRE",
-                    unit_cost=Decimal("1.00"),
-                    total_cost=Decimal("1250.00"),
-                    total_cost_base=Decimal("1250.00"),
-                    currency="USD",
-                    posted_at=datetime(2026, 2, 10, 18, 0, tzinfo=UTC),
-                ),
-                CostSubledgerEntry(
-                    organization_id=ORGANIZATION_ID,
-                    project_id=project.id,
-                    rig_id=rig.id,
-                    cost_category=CostCategory.MAINTENANCE_PARTS,
-                    description="Hydraulic seals & high pressure hose replacement",
+                    description=f"Direct Site Operational & Consumable Costs ({p.name})",
                     quantity=Decimal("1.00"),
                     unit_of_measure="LOT",
-                    unit_cost=Decimal("850.00"),
-                    total_cost=Decimal("850.00"),
-                    total_cost_base=Decimal("850.00"),
+                    unit_cost=metrics["cost"],
+                    total_cost=metrics["cost"],
+                    total_cost_base=metrics["cost"],
                     currency="USD",
                     posted_at=datetime(2026, 2, 10, 18, 0, tzinfo=UTC),
-                ),
-                CostSubledgerEntry(
-                    organization_id=ORGANIZATION_ID,
-                    project_id=project.id,
-                    cost_category=CostCategory.LABOUR,
-                    description="Drilling crew daily labor payroll",
-                    quantity=Decimal("1.00"),
-                    unit_of_measure="DAY",
-                    unit_cost=Decimal("2400.00"),
-                    total_cost=Decimal("2400.00"),
-                    total_cost_base=Decimal("2400.00"),
-                    currency="USD",
-                    posted_at=datetime(2026, 2, 10, 18, 0, tzinfo=UTC),
-                ),
-            ]
-        )
+                )
+            )
+    await session.flush()
 
     # 6. Maintenance Work Orders
     wo = (
