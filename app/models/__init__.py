@@ -59,6 +59,19 @@ from app.models.employee import (
     TrainingStatus,
     VerificationStatus,
 )
+from app.models.drilling import (
+    DrillHole,
+    DrillHoleStatus,
+    DrillingProgram,
+    DrillingProgramStatus,
+    DrillingShiftCrew,
+    DrillingShiftInterval,
+    DrillingShiftReport,
+    DrillingShiftTimeSegment,
+    ShiftReportStatus,
+    ShiftType,
+    TimeCategory,
+)
 from app.models.location import Location, LocationType
 from app.models.organization import Organization
 from app.models.project import Project, ProjectStatus
@@ -145,3 +158,4 @@ from app.models import project_report as project_report
 
 from app.models.document_library import LibraryDocument  # noqa: F401
 from app.models.intelligence import AssistantChatMessage  # noqa: F401
+from app.models import drilling as drilling  # noqa: F401

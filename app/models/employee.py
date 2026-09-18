@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
 )
 from sqlalchemy import Text as SAText
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -298,8 +299,16 @@ class Employee(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Actor
 
     @property
     def roles(self):
-        if hasattr(self, 'user') and self.user:
-            return [{"id": str(r.id), "name": r.name, "code": getattr(r, "code", None)} for r in self.user.roles] if getattr(self.user, "roles", None) else []
+        try:
+            insp = sa_inspect(self)
+            if insp and "user" not in insp.unloaded:
+                user = self.user
+                if user:
+                    user_insp = sa_inspect(user)
+                    if user_insp and "roles" not in user_insp.unloaded:
+                        return [{"id": str(r.id), "name": r.name, "code": getattr(r, "code", None)} for r in user.roles]
+        except Exception:
+            pass
         return []
 
     profile_photo_url: Mapped[str | None] = mapped_column(SAText)

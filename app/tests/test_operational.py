@@ -18,7 +18,7 @@ async def superuser_headers(client, admin, session_factory) -> dict[str, str]:
 
 
 async def make_employee(client, headers, **overrides) -> dict:
-    body = {"first_name": "Ada", "last_name": "Lovelace", "job_title": "Driller"}
+    body = {"first_name": "Ada", "last_name": "Lovelace", "job_title": "Driller", "profile_photo_url": None}
     body.update(overrides)
     response = await client.post("/api/v1/employees", json=body, headers=headers)
     assert response.status_code == 201, response.text

@@ -100,3 +100,6 @@ router.include_router(intelligence.router)
 
 from app.api.v1.endpoints import email
 router.include_router(email.router)
+
+from app.api.v1.endpoints import drilling
+router.include_router(drilling.router)

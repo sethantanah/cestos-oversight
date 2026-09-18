@@ -173,7 +173,7 @@ class EmployeeUpdate(BaseModel):
     termination_reason: str | None = None
     supervisor_id: uuid.UUID | None = None
     home_location_id: uuid.UUID | None = None
-    profile_photo_url: str | None
+    profile_photo_url: str | None = None
     roles: list[dict] = []
     bio: str | None = None
     notes: str | None = None

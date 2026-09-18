@@ -25,6 +25,9 @@ PREFIXES: dict[str, tuple[str, int]] = {
     "inventory_stock_count": ("CNT", 6),
     "inventory_transaction": ("INV", 6),
     "inventory_reservation": ("RSV", 6),
+    "drilling_program": ("DPG", 6),
+    "drilling_hole": ("DHL", 6),
+    "drilling_shift": ("DSR", 6),
 
 }
 
