@@ -520,6 +520,9 @@ async def approve_shift_report(
                 hole.status = DrillHoleStatus.IN_PROGRESS
                 hole.started_at = hole.started_at or datetime.now(UTC)
 
+    from app.services.commercial import calculate_and_post_shift_revenue
+    await calculate_and_post_shift_revenue(session, organization_id, report, actor_id=user_id)
+
     await session.commit()
     res = await get_shift_report(session, organization_id, report.id)
     assert res is not None

@@ -4,11 +4,20 @@ from app.api.v1.endpoints import (
     assets,
     auth,
     clients,
+    commercial,
+    documents,
+    drilling,
+    email,
     employees,
     equipment,
     hr,
+    intelligence,
+    inventory,
     locations,
+    notifications,
+    operational_logs,
     operations,
+    project_reports,
     projects,
     users,
 )
@@ -35,11 +44,11 @@ router.include_router(employees.patterns_router)
 router.include_router(employees.rotations_router)
 router.include_router(employees.authorizations_router)
 router.include_router(clients.router)
-from app.api.v1.endpoints import project_reports
 router.include_router(project_reports.router)
 router.include_router(projects.router)
 router.include_router(locations.router)
 router.include_router(equipment.router)
+
 covered_equipment_routes = {
     (getattr(r, "path", ""), method)
     for r in equipment.router.routes
@@ -57,49 +66,13 @@ router.include_router(assets.router)
 router.include_router(assets.categories_router)
 router.include_router(assets.asset_assignments_router)
 router.include_router(operations.router)
-
-
-router.include_router(locations.router)
-router.include_router(equipment.router)
-covered_equipment_routes = {
-    (getattr(r, "path", ""), method)
-    for r in equipment.router.routes
-    for method in getattr(r, "methods", [])
-}
-assets.router.routes[:] = [
-    r
-    for r in assets.router.routes
-    if not any(
-        (getattr(r, "path", ""), method) in covered_equipment_routes
-        for method in getattr(r, "methods", [])
-    )
-]
-router.include_router(assets.router)
-router.include_router(assets.categories_router)
-router.include_router(assets.asset_assignments_router)
-router.include_router(operations.router)
-
-
 router.include_router(hr.router)
-
-from app.api.v1.endpoints import inventory
 router.include_router(inventory.router)
 router.include_router(inventory.operational_router)
-
-from app.api.v1.endpoints import operational_logs
 router.include_router(operational_logs.router)
-
-from app.api.v1.endpoints import notifications
 router.include_router(notifications.router)
-
-from app.api.v1.endpoints import documents
 router.include_router(documents.router)
-
-from app.api.v1.endpoints import intelligence
 router.include_router(intelligence.router)
-
-from app.api.v1.endpoints import email
 router.include_router(email.router)
-
-from app.api.v1.endpoints import drilling
 router.include_router(drilling.router)
+router.include_router(commercial.router)

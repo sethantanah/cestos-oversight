@@ -158,4 +158,15 @@ from app.models import project_report as project_report
 
 from app.models.document_library import LibraryDocument  # noqa: F401
 from app.models.intelligence import AssistantChatMessage  # noqa: F401
+from app.models.drilling_commercial import (  # noqa: F401
+    ProjectContract,
+    ContractRateCard,
+    CostSubledgerEntry,
+    RevenueSubledgerEntry,
+    ContractStatus,
+    RateType,
+    CostCategory,
+    RevenueCategory,
+)
+
 from app.models import drilling as drilling  # noqa: F401
