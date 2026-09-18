@@ -19,6 +19,7 @@ from sqlalchemy import (
 from sqlalchemy import Text as SAText
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm.base import NO_VALUE
 
 from app.db.base import Base
 from app.db.mixins import (
@@ -301,12 +302,18 @@ class Employee(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Actor
     def roles(self):
         try:
             insp = sa_inspect(self)
-            if insp and "user" not in insp.unloaded:
-                user = self.user
-                if user:
+            if insp:
+                user_attr = insp.attrs.get("user")
+                if user_attr is not None and user_attr.loaded_value is not NO_VALUE and user_attr.loaded_value is not None:
+                    user = user_attr.loaded_value
                     user_insp = sa_inspect(user)
-                    if user_insp and "roles" not in user_insp.unloaded:
-                        return [{"id": str(r.id), "name": r.name, "code": getattr(r, "code", None)} for r in user.roles]
+                    if user_insp:
+                        roles_attr = user_insp.attrs.get("roles")
+                        if roles_attr is not None and roles_attr.loaded_value is not NO_VALUE and roles_attr.loaded_value:
+                            return [
+                                {"id": str(r.id), "name": r.name, "code": getattr(r, "code", None)}
+                                for r in roles_attr.loaded_value
+                            ]
         except Exception:
             pass
         return []
