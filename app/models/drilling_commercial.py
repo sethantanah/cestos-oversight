@@ -4,6 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -67,6 +68,7 @@ class ProjectContract(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin
         Enum(ContractStatus, name="contract_status", native_enum=False), default=ContractStatus.ACTIVE
     )
     notes: Mapped[str | None] = mapped_column(Text)
+    attachments: Mapped[list[dict] | None] = mapped_column(JSONB, default=list)
 
     rate_cards: Mapped[list["ContractRateCard"]] = relationship(
         "ContractRateCard", back_populates="contract", cascade="all, delete-orphan", lazy="selectin"

@@ -14,6 +14,7 @@ from app.schemas.drilling_commercial import (
     CostSubledgerEntryResponse,
     ProjectContractCreate,
     ProjectContractResponse,
+    ProjectContractUpdate,
     ProjectFinancialSummaryResponse,
     RigPerformanceSummaryResponse,
 )
@@ -54,6 +55,21 @@ async def get_contract(
 ) -> ProjectContractResponse:
     contract = await commercial_service.get_project_contract(
         session, current_user.organization_id, contract_id
+    )
+    if not contract:
+        raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found.")
+    return ProjectContractResponse.model_validate(contract)
+
+
+@router.patch("/contracts/{contract_id}", response_model=ProjectContractResponse)
+async def update_contract(
+    contract_id: uuid.UUID,
+    payload: ProjectContractUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProjectContractResponse:
+    contract = await commercial_service.update_project_contract(
+        session, current_user.organization_id, contract_id, payload, actor_id=current_user.id
     )
     if not contract:
         raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found.")

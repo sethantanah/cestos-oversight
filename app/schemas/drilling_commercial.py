@@ -36,6 +36,11 @@ class ContractRateCardResponse(BaseModel):
 
 
 # --- Project Contract Schemas ---
+class ContractAttachment(BaseModel):
+    name: str
+    url: str
+
+
 class ProjectContractCreate(BaseModel):
     project_id: uuid.UUID
     contract_number: str = Field(..., min_length=1, max_length=100)
@@ -45,6 +50,7 @@ class ProjectContractCreate(BaseModel):
     end_date: date | None = None
     status: ContractStatus = ContractStatus.ACTIVE
     notes: str | None = None
+    attachments: list[ContractAttachment] = Field(default_factory=list)
     rate_cards: list[ContractRateCardCreate] = Field(default_factory=list)
 
 
@@ -56,6 +62,8 @@ class ProjectContractUpdate(BaseModel):
     end_date: date | None = None
     status: ContractStatus | None = None
     notes: str | None = None
+    attachments: list[ContractAttachment] | None = None
+    rate_cards: list[ContractRateCardCreate] | None = None
 
 
 class ProjectContractResponse(BaseModel):
@@ -71,6 +79,7 @@ class ProjectContractResponse(BaseModel):
     end_date: date | None = None
     status: ContractStatus
     notes: str | None = None
+    attachments: list[ContractAttachment] = Field(default_factory=list)
     rate_cards: list[ContractRateCardResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

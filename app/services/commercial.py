@@ -48,6 +48,7 @@ async def create_project_contract(
         end_date=payload.end_date,
         status=payload.status,
         notes=payload.notes,
+        attachments=[a.model_dump() for a in payload.attachments] if payload.attachments else [],
         created_by_id=actor_id,
         updated_by_id=actor_id,
     )
@@ -64,6 +65,52 @@ async def create_project_contract(
             )
         )
     session.add(contract)
+    await session.commit()
+    await session.refresh(contract)
+    return contract
+
+
+async def update_project_contract(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    contract_id: uuid.UUID,
+    payload: ProjectContractUpdate,
+    actor_id: uuid.UUID | None = None,
+) -> ProjectContract | None:
+    contract = await get_project_contract(session, organization_id, contract_id)
+    if not contract:
+        return None
+
+    update_data = payload.model_dump(exclude_unset=True)
+    rate_cards_data = update_data.pop("rate_cards", None)
+    
+    if "attachments" in update_data:
+        attachments_val = update_data.pop("attachments")
+        if attachments_val is not None:
+            contract.attachments = [a if isinstance(a, dict) else a for a in attachments_val]
+
+    for key, value in update_data.items():
+        setattr(contract, key, value)
+
+    if rate_cards_data is not None:
+        contract.rate_cards.clear()
+        for rc in rate_cards_data:
+            rc_dict = rc if isinstance(rc, dict) else rc
+            contract.rate_cards.append(
+                ContractRateCard(
+                    organization_id=organization_id,
+                    rate_type=rc_dict["rate_type"],
+                    drilling_method=rc_dict.get("drilling_method"),
+                    depth_from_m=rc_dict.get("depth_from_m"),
+                    depth_to_m=rc_dict.get("depth_to_m"),
+                    unit_rate=rc_dict["unit_rate"],
+                    description=rc_dict.get("description"),
+                )
+            )
+
+    if actor_id:
+        contract.updated_by_id = actor_id
+
     await session.commit()
     await session.refresh(contract)
     return contract
