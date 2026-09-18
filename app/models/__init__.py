@@ -184,4 +184,18 @@ from app.models.maintenance_hse import (  # noqa: F401
     HseIncidentStatus,
     HseActionStatus,
 )
+from app.models.procurement import (  # noqa: F401
+    PurchaseOrder,
+    PurchaseOrderItem,
+    PoStatus,
+)
+from app.models.control_tower import (  # noqa: F401
+    SupervisorScorecard,
+    CommercialOpportunity,
+    ClientProjectGrant,
+    ClientPublishedArtifact,
+    TenderStage,
+    ClientArtifactType,
+)
+
 

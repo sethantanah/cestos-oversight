@@ -5,6 +5,7 @@ from app.api.v1.endpoints import (
     auth,
     clients,
     commercial,
+    control_tower,
     documents,
     drilling,
     email,
@@ -19,6 +20,7 @@ from app.api.v1.endpoints import (
     notifications,
     operational_logs,
     operations,
+    procurement,
     project_reports,
     projects,
     users,
@@ -80,3 +82,5 @@ router.include_router(drilling.router)
 router.include_router(commercial.router)
 router.include_router(maintenance.router)
 router.include_router(hse.router)
+router.include_router(procurement.router)
+router.include_router(control_tower.router)

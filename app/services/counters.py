@@ -31,8 +31,9 @@ PREFIXES: dict[str, tuple[str, int]] = {
     "maintenance_work_order": ("MWO", 6),
     "hse_incident": ("HSE", 6),
     "hse_corrective_action": ("CAP", 6),
-
-
+    "purchase_order": ("PO", 6),
+    "supervisor_scorecard": ("SCR", 6),
+    "commercial_opportunity": ("OPP", 6),
 }
 
 
