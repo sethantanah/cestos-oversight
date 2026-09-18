@@ -520,6 +520,8 @@ async def main() -> None:
                                 status=AssignmentStatus.ACTIVE,
                             )
                         )
+                from scripts.seed_demo_new_modules import seed_new_modules
+                await seed_new_modules(session)
         print("Demo seed complete.")
     finally:
         await engine.dispose()
