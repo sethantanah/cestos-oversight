@@ -279,6 +279,8 @@ async def create_opportunity(
         currency=payload.currency,
         expected_close_date=payload.expected_close_date,
         notes=payload.notes,
+        attachment_name=payload.attachment_name,
+        attachment_url=payload.attachment_url,
         created_by_id=actor_id,
         updated_by_id=actor_id,
     )
@@ -317,6 +319,8 @@ async def update_opportunity(
     if not opp or opp.organization_id != organization_id:
         raise ValueError(f"Opportunity {opportunity_id} not found.")
 
+    if payload.client_id is not None:
+        opp.client_id = payload.client_id
     if payload.title is not None:
         opp.title = payload.title
     if payload.tender_stage is not None:
@@ -325,10 +329,16 @@ async def update_opportunity(
         opp.win_probability_pct = payload.win_probability_pct
     if payload.estimated_value is not None:
         opp.estimated_value = payload.estimated_value
+    if payload.currency is not None:
+        opp.currency = payload.currency
     if payload.expected_close_date is not None:
         opp.expected_close_date = payload.expected_close_date
     if payload.notes is not None:
         opp.notes = payload.notes
+    if payload.attachment_name is not None:
+        opp.attachment_name = payload.attachment_name
+    if payload.attachment_url is not None:
+        opp.attachment_url = payload.attachment_url
 
     opp.updated_by_id = actor_id
     await session.commit()

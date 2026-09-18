@@ -77,6 +77,8 @@ class CommercialOpportunity(UUIDMixin, TimestampMixin, OrganizationMixin, Archiv
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     expected_close_date: Mapped[date | None] = mapped_column(Date)
     notes: Mapped[str | None] = mapped_column(Text)
+    attachment_name: Mapped[str | None] = mapped_column(String(255))
+    attachment_url: Mapped[str | None] = mapped_column(Text)
 
 
 class ClientProjectGrant(UUIDMixin, TimestampMixin, OrganizationMixin, Base):

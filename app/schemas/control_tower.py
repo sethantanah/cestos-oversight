@@ -74,15 +74,21 @@ class CommercialOpportunityCreate(BaseModel):
     currency: str = Field("USD", min_length=3, max_length=3)
     expected_close_date: date | None = None
     notes: str | None = None
+    attachment_name: str | None = None
+    attachment_url: str | None = None
 
 
 class CommercialOpportunityUpdate(BaseModel):
+    client_id: uuid.UUID | None = None
     title: str | None = Field(None, min_length=1, max_length=200)
     tender_stage: TenderStage | None = None
     win_probability_pct: Decimal | None = Field(None, ge=0, le=100)
     estimated_value: Decimal | None = Field(None, ge=0)
+    currency: str | None = Field(None, min_length=3, max_length=3)
     expected_close_date: date | None = None
     notes: str | None = None
+    attachment_name: str | None = None
+    attachment_url: str | None = None
 
 
 class CommercialOpportunityResponse(BaseModel):
@@ -99,6 +105,8 @@ class CommercialOpportunityResponse(BaseModel):
     currency: str
     expected_close_date: date | None = None
     notes: str | None = None
+    attachment_name: str | None = None
+    attachment_url: str | None = None
     created_at: datetime
     updated_at: datetime
 
