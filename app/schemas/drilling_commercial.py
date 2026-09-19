@@ -46,6 +46,7 @@ class ProjectContractCreate(BaseModel):
     contract_number: str = Field(..., min_length=1, max_length=100)
     title: str = Field(..., min_length=1, max_length=200)
     currency: str = Field("USD", min_length=3, max_length=3)
+    total_contract_value: Decimal | float | None = None
     start_date: date
     end_date: date | None = None
     status: ContractStatus = ContractStatus.ACTIVE
@@ -58,6 +59,7 @@ class ProjectContractUpdate(BaseModel):
     contract_number: str | None = Field(None, min_length=1, max_length=100)
     title: str | None = Field(None, min_length=1, max_length=200)
     currency: str | None = Field(None, min_length=3, max_length=3)
+    total_contract_value: Decimal | float | None = None
     start_date: date | None = None
     end_date: date | None = None
     status: ContractStatus | None = None
@@ -75,6 +77,7 @@ class ProjectContractResponse(BaseModel):
     contract_number: str
     title: str
     currency: str
+    total_contract_value: float | None = None
     start_date: date
     end_date: date | None = None
     status: ContractStatus

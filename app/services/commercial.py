@@ -44,6 +44,7 @@ async def create_project_contract(
         contract_number=payload.contract_number,
         title=payload.title,
         currency=payload.currency,
+        total_contract_value=payload.total_contract_value,
         start_date=payload.start_date,
         end_date=payload.end_date,
         status=payload.status,

@@ -67,6 +67,7 @@ class ProjectContract(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin
     status: Mapped[ContractStatus] = mapped_column(
         Enum(ContractStatus, name="contract_status", native_enum=False), default=ContractStatus.ACTIVE
     )
+    total_contract_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text)
     attachments: Mapped[list[dict] | None] = mapped_column(JSONB, default=list)
 
