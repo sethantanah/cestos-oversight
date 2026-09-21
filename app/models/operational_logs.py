@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -55,6 +55,10 @@ class AssetMaintenanceJob(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMix
     currency: Mapped[str] = mapped_column(String(3))
     completion_notes: Mapped[str | None] = mapped_column(Text)
     assigned_employee_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    checklist: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    field_notes: Mapped[str | None] = mapped_column(Text)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     is_recurring: Mapped[bool] = mapped_column(default=False, server_default="false")
     recurrence_interval_days: Mapped[int | None] = mapped_column(nullable=True)
 

@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import JSON, Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -112,6 +112,11 @@ class MaintenanceWorkOrder(UUIDMixin, TimestampMixin, OrganizationMixin, Archive
     completed_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     meter_reading: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     notes: Mapped[str | None] = mapped_column(Text)
+
+    checklist: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    field_notes: Mapped[str | None] = mapped_column(Text)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
 
     cost_lines: Mapped[list["WorkOrderCostLine"]] = relationship(
         "WorkOrderCostLine", back_populates="work_order", cascade="all, delete-orphan", lazy="selectin"

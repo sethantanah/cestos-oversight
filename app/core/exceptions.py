@@ -53,7 +53,9 @@ def install_exception_handlers(app: FastAPI) -> None:
         return error_response(exc.status, exc.code, exc.message)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    async def validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
         fields = []
         for issue in exc.errors():
             location = ".".join(str(part) for part in issue["loc"] if part != "body")
@@ -68,12 +70,21 @@ def install_exception_handlers(app: FastAPI) -> None:
                 message = "Check the value and format"
             fields.append({"field": location, "message": message})
         message = (
-            "; ".join(f"{item['field'].replace('_', ' ')}: {item['message']}" for item in fields)
+            "; ".join(
+                f"{item['field'].replace('_', ' ')}: {item['message']}"
+                for item in fields
+            )
             or "Request validation failed"
         )
         return JSONResponse(
             status_code=422,
-            content={"error": {"code": "VALIDATION_ERROR", "message": message, "fields": fields}},
+            content={
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": message,
+                    "fields": fields,
+                }
+            },
         )
 
     @app.exception_handler(HTTPException)
@@ -82,7 +93,33 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(IntegrityError)
     async def integrity_error(request: Request, exc: IntegrityError) -> JSONResponse:
-        return error_response(409, "CONFLICT", "The request conflicts with existing data")
+        import structlog
+
+        log = structlog.get_logger()
+
+        # inside the except block:
+        log.error(
+            "integrity_error",
+            exc_type=type(exc).__name__,
+            pgcode=getattr(getattr(exc, "orig", None), "pgcode", None),
+            diag_constraint=getattr(
+                getattr(getattr(exc, "orig", None), "diag", None),
+                "constraint_name",
+                None,
+            ),
+            diag_table=getattr(
+                getattr(getattr(exc, "orig", None), "diag", None), "table_name", None
+            ),
+            diag_column=getattr(
+                getattr(getattr(exc, "orig", None), "diag", None), "column_name", None
+            ),
+            detail=str(getattr(exc, "orig", exc)),
+            statement=getattr(exc, "statement", None),
+            params=getattr(exc, "params", None),
+        )
+        return error_response(
+            409, "CONFLICT", "The request conflicts with existing data"
+        )
 
     @app.exception_handler(Exception)
     async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:

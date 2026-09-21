@@ -38,6 +38,7 @@ class UserRead(ORMModel):
     last_name: str
     is_active: bool
     is_superuser: bool
+    is_field_portal_only: bool = False
     setup_required: bool = False
     last_login_at: datetime | None
     created_at: datetime
@@ -50,6 +51,7 @@ class UserCreate(BaseModel):
     password: SecretStr = Field(min_length=12, max_length=128)
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)
+    is_field_portal_only: bool = False
 
     @field_validator("email")
     @classmethod
@@ -62,5 +64,6 @@ class UserUpdate(BaseModel):
     last_name: str | None = None
     is_active: bool | None = None
     is_superuser: bool | None = None
+    is_field_portal_only: bool | None = None
     role_ids: list[uuid.UUID] | None = None
 

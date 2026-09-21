@@ -23,6 +23,8 @@ def upgrade() -> None:
         sa.Column("end_date", sa.Date(), nullable=True),
         sa.Column("status", sa.String(30), server_default="ACTIVE", nullable=False),
         sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("attachments", sa.JSON(), nullable=True),
+        sa.Column("total_contract_value", sa.Numeric(14, 2), nullable=True),
         sa.Column("is_active", sa.Boolean(), server_default="true", nullable=False),
         sa.Column("archived_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_by_id", sa.Uuid(), sa.ForeignKey("users.id"), nullable=True),

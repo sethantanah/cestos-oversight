@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     email,
     employees,
     equipment,
+    field_portal,
     hr,
     hse,
     intelligence,
@@ -24,6 +25,7 @@ from app.api.v1.endpoints import (
     project_reports,
     projects,
     users,
+    work_completion,
 )
 
 router = APIRouter()
@@ -71,6 +73,8 @@ router.include_router(assets.categories_router)
 router.include_router(assets.asset_assignments_router)
 router.include_router(operations.router)
 router.include_router(hr.router)
+router.include_router(field_portal.router)
+router.include_router(work_completion.router)
 router.include_router(inventory.router)
 router.include_router(inventory.operational_router)
 router.include_router(operational_logs.router)

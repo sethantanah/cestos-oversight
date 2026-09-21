@@ -102,7 +102,16 @@ async def deliver_one(session: AsyncSession, settings: Settings) -> bool:
         await session.commit()
         return True
     body = job.message
-    subject = "Cestos contract expiry reminder"
+    subject = {
+        "ALERT": "Cestos contract expiry reminder",
+        "CONTRACT_EXPIRY": "Cestos contract expiry reminder",
+        "PROJECT_ASSIGNMENT": "Cestos project assignment update",
+        "WORK_ORDER_UPDATE": "Cestos maintenance work order update",
+        "WORK_ORDER_OVERDUE": "Cestos overdue maintenance alert",
+        "WORK_ORDER_DUE": "Cestos maintenance due reminder",
+        "LEAVE_REQUESTED": "Cestos team leave request",
+        "LEAVE_DECISION": "Cestos leave request decision",
+    }.get(job.kind, "Cestos notification")
     setup = None
     if job.kind == "SETUP":
         if not user.setup_required:
@@ -134,7 +143,11 @@ async def deliver_one(session: AsyncSession, settings: Settings) -> bool:
             "If you did not expect this invitation, contact your administrator."
         )
     else:
-        body += f"\n\nSign in to Cestos: {settings.public_base_url.rstrip('/')}/#notifications"
+        destination = (
+            "/field-portal/notifications" if user.is_field_portal_only
+            else "/workspace/hr/notifications"
+        )
+        body += f"\n\nView your notifications: {settings.public_base_url.rstrip('/')}{destination}"
     try:
         await run_in_threadpool(
             send_email,
@@ -152,9 +165,9 @@ async def deliver_one(session: AsyncSession, settings: Settings) -> bool:
             session.add(setup)
         job.status = "SENT"
         job.last_error = None
-    except (OSError, smtplib.SMTPException):
+    except (OSError, smtplib.SMTPException, ValueError) as exc:
         job.attempts += 1
-        job.last_error = "SMTP delivery failed; check SMTP configuration and recipient address"
+        job.last_error = f"SMTP delivery failed ({type(exc).__name__}); check configuration and recipient"
         job.next_attempt_at = now + timedelta(minutes=min(2 ** min(job.attempts, 10), 360))
         if job.attempts >= 10:
             job.status = "FAILED"
@@ -162,17 +175,32 @@ async def deliver_one(session: AsyncSession, settings: Settings) -> bool:
     return True
 
 
-async def scheduler(app: FastAPI) -> None:
-    while True:
+async def scheduler_tick(app: FastAPI) -> None:
+    from app.services.field_notifications import generate_field_alerts
+    from app.services.notification_schedules import run_due_schedules
+
+    # Separate transactions and failure boundaries keep a broken rule from starving mail.
+    for generator in (generate_alerts, generate_field_alerts):
         try:
             async with app.state.session_factory() as session:
-                await generate_alerts(session)
-            for _ in range(20):
-                async with app.state.session_factory() as session:
-                    if not await deliver_one(session, app.state.settings):
-                        break
-        except asyncio.CancelledError:
-            raise
+                await generator(session)
         except Exception:
-            structlog.get_logger().error("hr_scheduler_failed", exc_info=True)
+            structlog.get_logger().exception("alert_generation_failed", generator=generator.__name__)
+    try:
+        await run_due_schedules(app.state.session_factory)
+    except Exception:
+        structlog.get_logger().exception("notification_schedules_failed")
+    for _ in range(20):
+        try:
+            async with app.state.session_factory() as session:
+                if not await deliver_one(session, app.state.settings):
+                    break
+        except Exception:
+            structlog.get_logger().exception("email_queue_failed")
+            break
+
+
+async def scheduler(app: FastAPI) -> None:
+    while True:
+        await scheduler_tick(app)
         await asyncio.sleep(app.state.settings.scheduler_interval_seconds)

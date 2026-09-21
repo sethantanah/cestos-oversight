@@ -11,7 +11,8 @@ from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.dependencies import scoped_roles
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.storage import LocalStorage
 from app.models import (
     Asset,
@@ -39,12 +40,12 @@ from app.models.employee import (
     AuthorizationStatus,
     DocumentType,
     LeaveRequest,
-    TimeLog,
     LeaveRequestStatus,
     RotationStatus,
+    TimeLog,
+    TimeLogStatus,
     TrainingStatus,
     VerificationStatus,
-    TimeLogStatus,
 )
 from app.repositories.base import organization_query
 from app.schemas.common import Page
@@ -75,6 +76,9 @@ from app.schemas.employee import (
     EmployeeSkillRead,
     EmployeeSkillUpdate,
     EmployeeTrainingRead,
+    LeaveRequestCreate,
+    LeaveRequestRead,
+    LeaveRequestUpdate,
     LicenseCreate,
     LicenseExpiringRead,
     LicenseUpdate,
@@ -89,14 +93,11 @@ from app.schemas.employee import (
     SkillCreate,
     SkillRead,
     SkillUpdate,
+    TimeLogCreate,
+    TimeLogRead,
     TrainingCreate,
     TrainingExpiringRead,
     TrainingUpdate,
-    TimeLogCreate,
-    TimeLogRead,
-    LeaveRequestCreate,
-    LeaveRequestUpdate,
-    LeaveRequestRead,
 )
 from app.services.audit import RequestMetadata, record_audit, request_metadata
 
@@ -1007,6 +1008,17 @@ class DocumentService:
         self.session = session
         self.actor = actor
 
+    def _require_contract_editor(self, document_type: DocumentType) -> None:
+        if document_type != DocumentType.EMPLOYMENT_CONTRACT or self.actor.is_superuser:
+            return
+        if not any(
+            role.name.strip().casefold() in {"hr", "admin", "administrator", "superadmin"}
+            for role in scoped_roles(self.actor)
+        ):
+            raise ForbiddenError(
+                "Only HR and Admin roles can attach or change employment contracts"
+            )
+
     async def list(self, employee_id: uuid.UUID) -> Sequence[EmployeeDocumentRead]:
         await _employee_or_404(self.session, self.actor, employee_id)
         rows = (
@@ -1040,6 +1052,7 @@ class DocumentService:
         request: Request | None = None,
     ) -> EmployeeDocumentRead:
         try:
+            self._require_contract_editor(body.document_type)
             await _employee_or_404(self.session, self.actor, employee_id)
             self._check_dates(body.issue_date, body.expiry_date)
             document = EmployeeDocument(
@@ -1089,6 +1102,8 @@ class DocumentService:
     ) -> EmployeeDocumentRead:
         try:
             document = await self._get_or_404(document_id)
+            self._require_contract_editor(document.document_type)
+            self._require_contract_editor(body.document_type or document.document_type)
             data = body.model_dump(exclude_unset=True)
             issue = data.get("issue_date", document.issue_date)
             expiry = data.get("expiry_date", document.expiry_date)
@@ -1230,6 +1245,7 @@ class DocumentService:
         request: Request | None = None,
     ) -> EmployeeDocumentRead:
         try:
+            self._require_contract_editor(document_type)
             await _employee_or_404(self.session, self.actor, employee_id)
             self._check_dates(issue_date, expiry_date)
             resolved_title = title or (filename or "Untitled document")
@@ -2568,6 +2584,9 @@ class LeaveRequestService:
                 },
                 **_meta(request),
             )
+            from app.services.field_notifications import notify_leave
+
+            await notify_leave(self.session, leave)
             await self.session.commit()
             return LeaveRequestRead.model_validate(leave)
         except (NotFoundError, ConflictError, ValidationError):
@@ -2639,6 +2658,9 @@ class LeaveRequestService:
                 new_values={"status": leave.status, "employee_id": str(leave.employee_id)},
                 **_meta(request),
             )
+            from app.services.field_notifications import notify_leave
+
+            await notify_leave(self.session, leave)
             await self.session.commit()
             return LeaveRequestRead.model_validate(leave)
         except (NotFoundError, ConflictError, ValidationError):

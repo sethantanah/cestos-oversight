@@ -9,6 +9,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
     UniqueConstraint,
@@ -64,8 +65,20 @@ class NotificationSchedule(UUIDMixin, TimestampMixin, OrganizationMixin, Base):
 
 
 class Notification(UUIDMixin, TimestampMixin, OrganizationMixin, Base):
+    """Shared inbox for scheduled alerts and arbitrary domain events.
+
+    Document-expiry producers alone populate rule_id, document_id and expiry_date.
+    Their unique constraint preserves legacy deduplication. Other producers may
+    omit them and use deterministic notification IDs to deduplicate events.
+    schedule_id is also optional for immediate events and forwarded alerts.
+    """
+
     __tablename__ = "notifications"
-    __table_args__ = (UniqueConstraint("rule_id", "document_id", "expiry_date", "recipient_id"),)
+    __table_args__ = (
+        UniqueConstraint("rule_id", "document_id", "expiry_date", "recipient_id"),
+        Index("ix_notifications_inbox", "organization_id", "recipient_id", "created_at", "id"),
+        Index("ix_notifications_unread", "organization_id", "recipient_id", "read_at"),
+    )
     rule_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("contract_alert_rules.id"), nullable=True)
     document_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employee_documents.id"), nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)

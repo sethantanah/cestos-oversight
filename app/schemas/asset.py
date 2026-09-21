@@ -157,6 +157,8 @@ class AssetRead(AssetFields, ORMModel):
     notes: str | None
     is_active: bool
     archived_at: datetime | None
+    current_project_id: uuid.UUID | None = None
+    current_project_name: str | None = None
     created_at: datetime
     updated_at: datetime
 

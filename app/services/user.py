@@ -53,6 +53,7 @@ class UserService:
                 ),
                 first_name=body.first_name,
                 last_name=body.last_name,
+                is_field_portal_only=body.is_field_portal_only,
                 setup_required=True,
             )
             self.session.add(user)
@@ -135,6 +136,7 @@ class UserService:
             ("positions.manage", "Create, update, or delete positions"),
             ("assets.read", "View equipment register"),
             ("assets.read_assigned", "View only equipment assigned to the user or their team"),
+            ("assets.read_write", "Read and update equipment details and operational status"),
             ("assets.create", "Add new equipment"),
             ("assets.update", "Update equipment details"),
             ("assets.assignments.manage", "Assign equipment to projects or operators"),
@@ -151,6 +153,9 @@ class UserService:
             ("users.read", "View system users and security roles"),
             ("users.create", "Create and update user accounts and role assignments"),
             ("roles.manage", "Manage roles and edit permission matrix"),
+            ("drilling.shifts.create", "Create daily shift production reports"),
+            ("drilling.shifts.approve", "Approve daily shift production reports and trigger commercial revenue posting"),
+            ("reports.approve", "Approve field reports, operational updates, and shift production summaries"),
             ("documents.download", "Download raw files and sensitive attachments"),
         ]
 
@@ -283,6 +288,8 @@ class UserService:
             if not self.actor.is_superuser:
                 raise ForbiddenError("Only superadmins can grant or revoke superuser status")
             user.is_superuser = body.is_superuser
+        if body.is_field_portal_only is not None:
+            user.is_field_portal_only = body.is_field_portal_only
 
         if body.role_ids is not None:
             roles = (

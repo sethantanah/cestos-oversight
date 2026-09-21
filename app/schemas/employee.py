@@ -135,7 +135,7 @@ class EmployeeCreate(BaseModel):
     termination_reason: str | None = None
     supervisor_id: uuid.UUID | None = None
     home_location_id: uuid.UUID | None = None
-    profile_photo_url: str | None
+    profile_photo_url: str | None = None
     roles: list[dict] = []
     bio: str | None = None
     notes: str | None = None
@@ -223,6 +223,10 @@ class EmployeeRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     availability_status: AvailabilityStatus | None = None
+    current_project_id: uuid.UUID | None = None
+    current_project_name: str | None = None
+    current_location_id: uuid.UUID | None = None
+    current_location_name: str | None = None
 
 
 EmployeeListItem = EmployeeRead
@@ -751,6 +755,7 @@ class EmployeeAssignmentRead(ORMModel):
     assignment_number: str
     employee_id: uuid.UUID
     project_id: uuid.UUID
+    project_name: str | None = None
     location_id: uuid.UUID | None
     position_id: uuid.UUID | None
     role_on_project: str | None
@@ -767,6 +772,7 @@ class EmployeeAssignmentRead(ORMModel):
     notes: str | None
     created_at: datetime
     updated_at: datetime
+
 
 
 class EmployeeTransferRequest(BaseModel):

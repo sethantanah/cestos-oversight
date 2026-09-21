@@ -72,3 +72,46 @@ async def test_notification_schedule_creation_and_evaluation(identities, session
         items, total = await service.list_notifications(domain="INVENTORY")
         assert isinstance(items, list)
 
+
+async def test_notify_assigned_employee_alerts(identities, session_factory):
+    """Test real-time alert notification dispatch to assigned employees."""
+    user = identities["admin"]
+    async with session_factory() as session:
+        from app.models.employee import Employee
+        from app.services.notification_service import notify_assigned_employee
+
+        # Create an employee linked to the admin user email
+        emp = Employee(
+            organization_id=user.organization_id,
+            employee_number=f"EMP-ALERT-{uuid.uuid4().hex[:4]}",
+            first_name="Assigned",
+            last_name="Technician",
+            work_email=user.email,
+            user_id=user.id,
+            job_title="Lead Field Mechanic",
+        )
+        session.add(emp)
+        await session.commit()
+
+        # Dispatch assigned work order alert
+        msg = "Equipment Work Order Assigned: You have been assigned to 'Track Tensioning & Undercarriage Safety Check' on Rig RC-01."
+        sent = await notify_assigned_employee(
+            session=session,
+            organization_id=user.organization_id,
+            employee_id=emp.id,
+            message=msg,
+            domain="EQUIPMENT",
+            priority_tag="HIGH",
+            actor_id=user.id,
+        )
+        await session.commit()
+        assert sent is True
+
+        # Verify notification and email delivery queue entry created
+        service = NotificationService(session, user)
+        items, total = await service.list_notifications(domain="EQUIPMENT")
+        assert total >= 1
+        found = any(msg in n["message"] for n in items)
+        assert found is True
+
+

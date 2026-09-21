@@ -15,6 +15,7 @@ from app.core.dependencies import require_permission
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.session import get_session
 from app.models import AssetAssignment, Employee, Location, Project, User
+from app.models.maintenance_hse import MaintenanceWorkOrder
 from app.models.asset import AssetMeterReading
 from app.models.asset_records import AssetDefect, AssetInspection
 from app.models.operational_logs import (
@@ -250,6 +251,8 @@ async def maintenance(
     return await page_records(service, AssetMaintenanceJob, "asset_id", asset_id, page, page_size)
 
 
+
+
 @router.post("/assets/{asset_id}/maintenance", status_code=201)
 async def create_maintenance(
     asset_id: uuid.UUID,
@@ -257,22 +260,33 @@ async def create_maintenance(
     actor: User = Depends(require_permission("assets.update")),
     session: AsyncSession = Depends(get_session),
 ) -> Any:
+    from app.services.field_work import is_supervisor
+    from app.core.exceptions import ForbiddenError
+    if actor.is_field_portal_only and not is_supervisor(actor):
+        raise ForbiddenError("Only supervisors can create field work orders")
     service = EquipmentService(session, actor)
-    await writable_asset(service, asset_id)
+    target_asset_id = body.asset_id or asset_id
+    await writable_asset(service, target_asset_id)
     if body.project_id is not None:
         await service.ref(Project, body.project_id)
     if body.assigned_employee_id is not None:
         await service.ref(Employee, body.assigned_employee_id)
+    data = body.model_dump(exclude={"asset_id"})
     row = AssetMaintenanceJob(
         organization_id=actor.organization_id,
-        asset_id=asset_id,
+        asset_id=target_asset_id,
         created_by_id=actor.id,
         status="OPEN",
-        **body.model_dump(),
+        **data,
     )
     session.add(row)
     await session.flush()
-    service.audit("asset.maintenance_created", asset_id, row)
+    service.audit("asset.maintenance_created", target_asset_id, row)
+
+    from app.services.field_notifications import notify_work_order
+
+    await notify_work_order(session, row)
+
     await service.commit()
     res = public(service, row)
     if row.assigned_employee_id:
@@ -290,6 +304,9 @@ async def update_maintenance(
     actor: User = Depends(require_permission("assets.update")),
     session: AsyncSession = Depends(get_session),
 ) -> Any:
+    from app.core.exceptions import ForbiddenError
+    if actor.is_field_portal_only:
+        raise ForbiddenError("Update assigned work through the Field Portal work-order endpoint")
     service = EquipmentService(session, actor)
     await writable_asset(service, asset_id)
     row = await service.ref(AssetMaintenanceJob, job_id, asset_id, lock=True)
@@ -335,6 +352,17 @@ async def update_maintenance(
             await session.flush()
             service.audit("asset.maintenance_created_recurring", asset_id, next_job)
     service.audit("asset.maintenance_updated", asset_id, row)
+    from app.services.field_notifications import notify_work_order
+
+    row.updated_at = datetime.now(UTC)
+    await session.flush()
+    event = row.status.lower() if row.status in {"COMPLETED", "CANCELLED"} else "updated"
+    await notify_work_order(session, row, event)
+    if (
+        body.status == "COMPLETED" and row.is_recurring
+        and row.recurrence_interval_days and row.recurrence_interval_days > 0
+    ):
+        await notify_work_order(session, next_job)
     await service.commit()
     res = public(service, row)
     if row.assigned_employee_id:
@@ -352,6 +380,9 @@ async def maintenance_status(
     actor: User = Depends(require_permission("assets.update")),
     session: AsyncSession = Depends(get_session),
 ) -> Any:
+    from app.core.exceptions import ForbiddenError
+    if actor.is_field_portal_only:
+        raise ForbiddenError("Update assigned work through the Field Portal work-order endpoint")
     service = EquipmentService(session, actor)
     await service.asset(asset_id, True)
     row = await service.ref(AssetMaintenanceJob, job_id, asset_id, lock=True)
@@ -377,6 +408,11 @@ async def maintenance_status(
         row,
         {"previous_status": previous, "status": body.status, "notes": body.notes},
     )
+    from app.services.field_notifications import notify_work_order
+
+    row.updated_at = datetime.now(UTC)
+    await session.flush()
+    await notify_work_order(session, row, body.status.lower())
     await service.commit()
     return public(service, row)
 
@@ -387,6 +423,7 @@ async def validate_log(
     models = {
         "FUEL": AssetFuelLog,
         "MAINTENANCE": AssetMaintenanceJob,
+        "WORK_ORDER": MaintenanceWorkOrder,
         "INSPECTION": AssetInspection,
         "METER": AssetMeterReading,
         "FUEL_REDUCTION": AssetFuelReduction,

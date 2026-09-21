@@ -148,7 +148,40 @@ class AssetService:
                 .limit(page_size)
             )
         ).all()
-        items = [AssetRead.model_validate(row) for row in rows]
+        items = []
+        if rows:
+            asset_ids = [r.id for r in rows]
+            assignments = (
+                await self.session.scalars(
+                    select(AssetAssignment).where(
+                        AssetAssignment.organization_id == self.actor.organization_id,
+                        AssetAssignment.asset_id.in_(asset_ids),
+                        AssetAssignment.status == AssignmentStatus.ACTIVE,
+                    )
+                )
+            ).all()
+            assign_map = {a.asset_id: a for a in assignments}
+            proj_ids = [a.project_id for a in assignments if a.project_id]
+            proj_map: dict[uuid.UUID, str] = {}
+            if proj_ids:
+                projects = (
+                    await self.session.scalars(
+                        select(Project).where(
+                            Project.organization_id == self.actor.organization_id,
+                            Project.id.in_(proj_ids),
+                        )
+                    )
+                ).all()
+                proj_map = {p.id: p.name for p in projects}
+
+            for row in rows:
+                dto = AssetRead.model_validate(row)
+                asgn = assign_map.get(row.id)
+                if asgn:
+                    dto.current_project_id = asgn.project_id
+                    dto.current_project_name = proj_map.get(asgn.project_id)
+                items.append(dto)
+
         return Page(
             items=items,
             total=total or 0,

@@ -1,9 +1,10 @@
 """Notification resolution, forwarding, and granular notification scheduling endpoints."""
 
+import asyncio
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_active_user
@@ -32,16 +33,39 @@ async def list_notifications(
     session: AsyncSession = Depends(get_session),
 ) -> Any:
     service = NotificationService(session, actor)
-    items, total = await service.list_notifications(
-        domain=domain,
-        priority_tag=priority_tag,
-        is_resolved=is_resolved,
-        is_read=is_read,
-        page=page,
-        page_size=page_size,
-        search=search,
-    )
+    try:
+        async with asyncio.timeout(5):
+            items, total = await service.list_notifications(
+                domain=domain,
+                priority_tag=priority_tag,
+                is_resolved=is_resolved,
+                is_read=is_read,
+                page=page,
+                page_size=page_size,
+                search=search,
+            )
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503, detail="Notification sync timed out; retry shortly.",
+            headers={"Retry-After": "30"},
+        ) from exc
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/notifications/unread-count")
+async def unread_notification_count(
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    try:
+        async with asyncio.timeout(5):
+            total = await NotificationService(session, actor).unread_count()
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503, detail="Notification sync timed out; retry shortly.",
+            headers={"Retry-After": "30"},
+        ) from exc
+    return {"total": total}
 
 
 @router.post("/notifications/{notification_id}/read")
@@ -166,6 +190,7 @@ async def get_notification_schedule(
 
 
 @router.patch("/notification-schedules/{schedule_id}")
+@router.put("/notification-schedules/{schedule_id}")
 async def update_notification_schedule(
     schedule_id: uuid.UUID,
     body: NotificationScheduleUpdate,
@@ -183,10 +208,12 @@ async def update_notification_schedule(
         "frequency": row.frequency,
         "priority_tag": row.priority_tag,
         "delivery_method": row.delivery_method,
-        "recipient_user_ids": row.recipient_user_ids,
-        "recipient_roles": row.recipient_roles,
+        "recipient_user_ids": row.recipient_user_ids or [],
+        "recipient_roles": row.recipient_roles or [],
         "is_active": row.is_active,
         "last_run_at": row.last_run_at,
+        "next_run_at": row.next_run_at,
+        "created_at": row.created_at,
     }
 
 

@@ -68,6 +68,12 @@ async def create_work_order(
             )
         )
     session.add(wo)
+
+    from app.services.field_notifications import notify_work_order
+
+    await session.flush()
+    await notify_work_order(session, wo)
+
     await session.commit()
     return await get_work_order(session, organization_id, wo.id)  # type: ignore[return-value]
 
@@ -209,6 +215,11 @@ async def complete_work_order(
             session.add(subledger_entry)
             line.posted_to_subledger = True
 
+    from app.services.field_notifications import notify_work_order
+
+    wo.updated_at = datetime.now(UTC)
+    await session.flush()
+    await notify_work_order(session, wo, "completed")
     await session.commit()
     res = await get_work_order(session, organization_id, wo.id)
     assert res is not None

@@ -293,6 +293,23 @@ async def return_shift_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
+@router.delete("/shifts/{shift_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_shift_report(
+    shift_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> None:
+    try:
+        await drilling_service.delete_shift_report(
+            session=session,
+            organization_id=user.organization_id,
+            shift_id=shift_id,
+            actor_id=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
 # --- Project Drilling Summary ---
 @router.get("/projects/{project_id}/summary", response_model=ProjectDrillingSummaryResponse)
 async def get_project_drilling_summary(
@@ -305,3 +322,20 @@ async def get_project_drilling_summary(
         organization_id=user.organization_id,
         project_id=project_id,
     )
+
+
+# --- Shift Daily Context (Store Consumptions, Fuel, Meters, Faults, HSE) ---
+@router.get("/shifts/{shift_id}/daily-context")
+async def get_shift_daily_context(
+    shift_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> Any:
+    try:
+        return await drilling_service.get_shift_daily_context(
+            session=session,
+            organization_id=user.organization_id,
+            shift_id=shift_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

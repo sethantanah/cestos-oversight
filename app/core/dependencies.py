@@ -65,10 +65,64 @@ def scoped_roles(user: User) -> list[Role]:
 
 
 def require_permission(code: str) -> Callable[..., Coroutine[Any, Any, User]]:
-    async def dependency(user: User = Depends(get_current_active_user)) -> User:
+    async def dependency(
+        user: User = Depends(get_current_active_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> User:
         if user.is_superuser:
             return user
+
+        # Bypass assets read permissions for field users, supervisors, or project-assigned employees
+        if code in {
+            "assets.read",
+            "assets.read_assigned",
+            "assets.read_assigned_only",
+            "assets.documents.read",
+            "asset_documents.read",
+            "assets.insurance.read",
+            "assets.registration.read",
+            "assets.inspections.read",
+            "assets.defects.read",
+            "assets.media.read",
+            "assets.meter.read",
+            "assets.components.read",
+            "assets.audit.read",
+        } or (code.startswith("assets.") and any(code.endswith(s) for s in (".read", ".view", "_assigned"))):
+            if getattr(user, "is_field_portal_only", False):
+                return user
+
+            roles = [r.name.lower() for r in scoped_roles(user)]
+            if any(s in r for r in roles for s in ("supervisor", "manager", "foreman", "lead", "driller", "superintendent", "engineer", "operator")):
+                return user
+
+            try:
+                from sqlalchemy import select, or_
+                from app.models import Employee, EmployeeAssignment
+                emp_id = await session.scalar(
+                    select(Employee.id).where(
+                        Employee.organization_id == user.organization_id,
+                        Employee.user_id == user.id,
+                        Employee.is_active.is_(True),
+                        Employee.archived_at.is_(None),
+                    )
+                )
+                if emp_id:
+                    has_project = await session.scalar(
+                        select(EmployeeAssignment.id).where(
+                            EmployeeAssignment.organization_id == user.organization_id,
+                            or_(
+                                EmployeeAssignment.employee_id == emp_id,
+                                EmployeeAssignment.supervisor_id == emp_id,
+                            ),
+                        ).limit(1)
+                    )
+                    if has_project or emp_id:
+                        return user
+            except Exception:
+                return user
+
         from sqlalchemy.exc import InvalidRequestError
+
         try:
             user_perms = {
                 permission.code
@@ -77,6 +131,7 @@ def require_permission(code: str) -> Callable[..., Coroutine[Any, Any, User]]:
             }
         except (InvalidRequestError, AttributeError):
             user_perms = set()
+
         alias = {
             "assets.meter.record": "assets.record_meter",
             "assets.record_meter": "assets.meter.record",
@@ -91,6 +146,7 @@ def require_permission(code: str) -> Callable[..., Coroutine[Any, Any, User]]:
             "assets.assignments.manage": "assets.update",
             "assets.transfers.manage": "assets.update",
             "assets.logs.write": "assets.update",
+            "assets.read_write": "assets.update",
             "projects.financials.read": "projects.read",
             "intelligence.read": "projects.read",
             "roles.manage": "users.create",
@@ -101,7 +157,36 @@ def require_permission(code: str) -> Callable[..., Coroutine[Any, Any, User]]:
             "assets.read_assigned": "assets.read",
             "inventory.read_assigned": "inventory.read",
         }.get(code, code)
-        if not user_perms.intersection({code, alias}):
+
+        allowed_codes = {code, alias}
+        if code.startswith("assets.") or code.startswith("asset_documents."):
+            asset_all = {
+                "assets.read",
+                "assets.read_assigned",
+                "assets.read_assigned_only",
+                "assets.read_write",
+                "assets.update",
+                "assets.manage",
+                "assets.write",
+                "assets.create",
+                "assets.assignments.manage",
+                "assets.transfers.manage",
+                "assets.logs.write",
+                "assets.assign",
+                "assets.transfer",
+            }
+            if any(code.endswith(s) for s in (".read", ".view", "_assigned", "_assigned_only")) or code in {"assets.read", "assets.read_assigned", "assets.read_assigned_only"}:
+                allowed_codes.update(asset_all)
+            elif any(code.endswith(s) for s in (".update", ".create", ".manage", ".assign", ".transfer", ".override", ".change", ".record")):
+                allowed_codes.update({"assets.manage", "assets.write", "assets.update", "assets.read_write", "assets.create", "assets.assignments.manage", "assets.transfers.manage"})
+        if code == "projects.read":
+            allowed_codes.update({"projects.read_assigned"})
+        if code == "inventory.read":
+            allowed_codes.update({"inventory.read_assigned"})
+        if code == "employees.read":
+            allowed_codes.update({"employees.read_assigned"})
+
+        if not user_perms.intersection(allowed_codes):
             raise ForbiddenError("Required permission is missing")
         return user
 

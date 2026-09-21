@@ -30,7 +30,15 @@ class FuelLogCreate(Input):
         return value
 
 
+class MaintenanceChecklistItem(Input):
+    id: str = Field(min_length=1, max_length=100)
+    task: str = Field(min_length=1, max_length=500)
+    completed: bool = False
+
+
 class MaintenanceCreate(Input):
+    checklist: list[MaintenanceChecklistItem] = Field(default_factory=list, max_length=100)
+    asset_id: uuid.UUID | None = None
     project_id: uuid.UUID | None = None
     title: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=20000)

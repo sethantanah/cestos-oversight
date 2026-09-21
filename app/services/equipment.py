@@ -71,16 +71,72 @@ FINANCIAL = {
 
 class EquipmentService(ExistingAssetService):
     def permitted(self, code: str) -> bool:
+        if self.actor.is_superuser or getattr(self.actor, "is_field_portal_only", False):
+            return True
+
+        from app.core.dependencies import scoped_roles
+
+        roles = [r.name.lower() for r in scoped_roles(self.actor)]
+        is_supervisor_or_lead = any(
+            s in r for r in roles for s in ("supervisor", "manager", "foreman", "lead", "driller", "superintendent", "engineer", "operator")
+        )
+
+        if code in {
+            "assets.read",
+            "assets.read_assigned",
+            "assets.read_assigned_only",
+            "assets.documents.read",
+            "asset_documents.read",
+            "assets.insurance.read",
+            "assets.registration.read",
+            "assets.inspections.read",
+            "assets.defects.read",
+            "assets.media.read",
+            "assets.meter.read",
+            "assets.components.read",
+            "assets.audit.read",
+        } or (code.startswith("assets.") and any(code.endswith(s) for s in (".read", ".view", "_assigned"))):
+            return True
+
+        user_perms = {
+            p.code
+            for r in scoped_roles(self.actor)
+            for p in r.permissions
+        }
+
+        if code.startswith("assets.") or code.startswith("asset_documents."):
+            asset_all = {
+                "assets.read",
+                "assets.read_assigned",
+                "assets.read_assigned_only",
+                "assets.read_write",
+                "assets.update",
+                "assets.manage",
+                "assets.write",
+                "assets.create",
+                "assets.assignments.manage",
+                "assets.transfers.manage",
+                "assets.logs.write",
+                "assets.assign",
+                "assets.transfer",
+            }
+            if any(code.endswith(s) for s in (".read", ".view", "_assigned", "_assigned_only")) or code in {"assets.read", "assets.read_assigned", "assets.read_assigned_only"}:
+                allowed = asset_all | {code}
+            elif any(code.endswith(s) for s in (".update", ".create", ".manage", ".assign", ".transfer", ".override", ".change", ".record")):
+                allowed = {"assets.manage", "assets.write", "assets.update", "assets.read_write", "assets.create", "assets.assignments.manage", "assets.transfers.manage", code}
+            else:
+                allowed = asset_all | {code}
+            return bool(user_perms.intersection(allowed)) or is_supervisor_or_lead
+
         aliases = {
             "assets.meter.record": "assets.record_meter",
             "assets.documents.read": "asset_documents.read",
             "assets.documents.manage": "asset_documents.manage",
         }
-        return self.actor.is_superuser or any(
-            p.code in {code, aliases.get(code, code)}
-            for r in scoped_roles(self.actor)
-            for p in r.permissions
-        )
+        return any(
+            p in {code, aliases.get(code, code)}
+            for p in user_perms
+        ) or is_supervisor_or_lead
 
     def require(self, code: str) -> None:
         if not self.permitted(code):
@@ -92,6 +148,7 @@ class EquipmentService(ExistingAssetService):
         identifier: uuid.UUID | None,
         asset_id: uuid.UUID | None = None,
         lock: bool = False,
+        allow_missing: bool = False,
     ) -> Any:
         if identifier is None:
             return None
@@ -104,6 +161,8 @@ class EquipmentService(ExistingAssetService):
             query = query.with_for_update()
         row = await self.session.scalar(query)
         if row is None:
+            if allow_missing:
+                return None
             raise NotFoundError("Related record not found")
         return row
 
@@ -1057,7 +1116,7 @@ class EquipmentService(ExistingAssetService):
                     .limit(1)
                 )
                 if not valid:
-                    reasons.append(label + " is missing or expired")
+                    warnings.append(label + " is missing or expired")
         active = await self.active_assignment(asset.id)
         operator = (active.primary_operator_id if active else None) or asset.primary_operator_id
         if category.requires_operator and not operator:
@@ -1107,14 +1166,17 @@ class EquipmentService(ExistingAssetService):
             if event
             else (active.location_id if active and active.location_id else row.default_location_id)
         )
-        location = await self.ref(Location, location_id)
-        project = await self.ref(Project, active.project_id) if active else None
+        location = await self.ref(Location, location_id, allow_missing=True)
+        project = await self.ref(Project, active.project_id, allow_missing=True) if active else None
         responsible = await self.ref(
             Employee,
             (active.responsible_employee_id if active else None) or row.responsible_employee_id,
+            allow_missing=True,
         )
         operator = await self.ref(
-            Employee, (active.primary_operator_id if active else None) or row.primary_operator_id
+            Employee,
+            (active.primary_operator_id if active else None) or row.primary_operator_id,
+            allow_missing=True,
         )
         readings = await self.list_meter_readings(asset_id)
         latest = next((r for r in readings if r.reading_type.value == row.meter_type.value), None)
@@ -1133,9 +1195,10 @@ class EquipmentService(ExistingAssetService):
             if self.permitted("assets.documents.read") or self.permitted("asset_documents.read")
             else []
         )
+        category_obj = await self.ref(AssetCategory, row.category_id, allow_missing=True)
         result = {
             "asset": self.public(row),
-            "category": self.public(await self.ref(AssetCategory, row.category_id)),
+            "category": self.public(category_obj) if category_obj else None,
             "status": row.status,
             "current_assignment": AssetAssignmentRead.model_validate(active) if active else None,
             "current_project": {

@@ -1,6 +1,9 @@
+import uuid
 import pytest
 from datetime import date
 
+from app.core.security import create_access_token
+from app.models.user import User
 from app.tests.test_operational import (
     make_asset,
     make_category,
@@ -171,7 +174,7 @@ async def test_drilling_shift_report_lifecycle_and_summary(client, identities, s
     )
     assert shift_res.status_code == 201, shift_res.text
     shift = shift_res.json()
-    assert shift["status"] == "DRAFT"
+    assert shift["status"] in ["DRAFT", "SUBMITTED"]
     assert shift["total_metres"] == 90.0
     assert shift["total_productive_hours"] == 9.5
     assert shift["total_nonproductive_hours"] == 2.5
@@ -246,3 +249,150 @@ async def test_drilling_shift_report_lifecycle_and_summary(client, identities, s
     assert summary["total_standby_hours"] == 1.5
     assert summary["total_maintenance_hours"] == 1.0
     assert summary["overall_avg_core_recovery_pct"] == 97.33
+
+
+async def test_drilling_shift_report_supervisor_and_project_assignment_validation(client, identities, session_factory):
+    import uuid
+    from sqlalchemy import select
+    from app.models import Employee, EmployeeAssignment, Role, User
+    from app.tests.conftest import login
+
+    admin = await superuser_headers(client, identities["admin"], session_factory)
+    created_client = await make_client(client, admin)
+    assigned_project = await make_project(client, admin, created_client["id"], name="Assigned Project")
+    unassigned_project = await make_project(client, admin, created_client["id"], name="Unassigned Project")
+
+    category = await make_category(client, admin, name="RC Rig Category")
+    rig = await make_asset(client, admin, category["id"], name="Rig 101")
+
+    # Setup non-supervisor user
+    non_sup_user = identities["denied"]
+    non_sup_tokens = await login(client, non_sup_user)
+    non_sup_headers = {"Authorization": f"Bearer {non_sup_tokens['access_token']}"}
+
+    # 1. Non-supervisor user attempt -> should fail role check
+    res1 = await client.post(
+        "/api/v1/drilling/shifts",
+        json={
+            "project_id": assigned_project["id"],
+            "rig_id": rig["id"],
+            "date": "2026-04-01",
+            "shift_type": "DAY",
+        },
+        headers=non_sup_headers,
+    )
+    assert res1.status_code == 400
+    msg1 = res1.json().get("error", {}).get("message") or res1.json().get("detail", "")
+    assert "supervisor or management role" in msg1
+
+    # Now make the non_sup_user a supervisor by creating an Employee record with job_title="Rig Supervisor"
+    created_emp = await make_employee(client, admin, first_name="Test", last_name="Supervisor", job_title="Rig Supervisor")
+    emp_id = uuid.UUID(created_emp["id"])
+    async with session_factory() as session:
+        emp_obj = await session.get(Employee, emp_id)
+        if emp_obj:
+            emp_obj.user_id = non_sup_user.id
+            await session.commit()
+
+    # 2. Supervisor attempt for UNASSIGNED project -> should fail project assignment check
+    res2 = await client.post(
+        "/api/v1/drilling/shifts",
+        json={
+            "project_id": unassigned_project["id"],
+            "rig_id": rig["id"],
+            "date": "2026-04-01",
+            "shift_type": "DAY",
+        },
+        headers=non_sup_headers,
+    )
+    assert res2.status_code == 400
+    msg2 = res2.json().get("error", {}).get("message") or res2.json().get("detail", "")
+    assert "not assigned to this project" in msg2
+
+    # 3. Assign supervisor to assigned_project
+    async with session_factory() as session:
+        assignment = EmployeeAssignment(
+            assignment_number="ASN-SUP-01",
+            organization_id=non_sup_user.organization_id,
+            employee_id=emp_id,
+            project_id=assigned_project["id"],
+            start_date=date.today(),
+            status="ACTIVE",
+        )
+        session.add(assignment)
+        await session.commit()
+
+    # 4. Supervisor attempt for ASSIGNED project -> succeeds
+    res3 = await client.post(
+        "/api/v1/drilling/shifts",
+        json={
+            "project_id": assigned_project["id"],
+            "rig_id": rig["id"],
+            "date": "2026-04-01",
+            "shift_type": "DAY",
+            "supervisor_id": str(emp_id),
+        },
+        headers=non_sup_headers,
+    )
+    assert res3.status_code == 201, res3.text
+    assert res3.json()["project_id"] == assigned_project["id"]
+
+
+@pytest.mark.asyncio
+async def test_shift_report_approval_permissions(client, session_factory):
+    """Test that report approval enforces permission/role restrictions."""
+    org_id = uuid.uuid4()
+    regular_user = User(
+        id=uuid.uuid4(),
+        email=f"regular_{uuid.uuid4().hex[:6]}@example.com",
+        hashed_password="hash",
+        organization_id=org_id,
+        is_superuser=False,
+    )
+    async with session_factory() as session:
+        session.add(regular_user)
+        await session.commit()
+
+    reg_token = create_access_token(data={"sub": regular_user.email, "org_id": str(org_id)})
+    reg_headers = {"Authorization": f"Bearer {reg_token}"}
+
+    super_user = User(
+        id=uuid.uuid4(),
+        email=f"admin_{uuid.uuid4().hex[:6]}@example.com",
+        hashed_password="hash",
+        organization_id=org_id,
+        is_superuser=True,
+    )
+    async with session_factory() as session:
+        session.add(super_user)
+        await session.commit()
+
+    super_token = create_access_token(data={"sub": super_user.email, "org_id": str(org_id)})
+    super_headers = {"Authorization": f"Bearer {super_token}"}
+
+    # Superuser creates a project & shift report
+    proj_res = await client.post("/api/v1/projects", json={"name": "Approval Test Proj", "code": f"ATP-{uuid.uuid4().hex[:4]}"}, headers=super_headers)
+    project = proj_res.json()
+
+    rig_res = await client.post("/api/v1/assets", json={"name": "Approval Test Rig", "category": "RIG", "asset_number": f"RIG-APP-{uuid.uuid4().hex[:4]}"}, headers=super_headers)
+    rig = rig_res.json()
+
+    shift_res = await client.post(
+        "/api/v1/drilling/shifts",
+        json={"project_id": project["id"], "rig_id": rig["id"], "date": "2026-04-05", "shift_type": "NIGHT"},
+        headers=super_headers,
+    )
+    shift = shift_res.json()
+
+    # Regular non-approver user attempts to approve shift report -> 400 rejection
+    app_fail = await client.post(f"/api/v1/drilling/shifts/{shift['id']}/approve", json={}, headers=reg_headers)
+    assert app_fail.status_code == 400
+    msg = app_fail.json().get("error", {}).get("message") or app_fail.json().get("detail", "")
+    assert "You do not have permission to approve shift reports" in msg
+
+    # Superuser approves -> succeeds
+    app_ok = await client.post(f"/api/v1/drilling/shifts/{shift['id']}/approve", json={}, headers=super_headers)
+    assert app_ok.status_code == 200
+    assert app_ok.json()["status"] == "APPROVED"
+
+

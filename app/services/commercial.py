@@ -133,6 +133,19 @@ async def get_project_contract(
     )
 
 
+async def delete_project_contract(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    contract_id: uuid.UUID,
+) -> bool:
+    contract = await get_project_contract(session, organization_id, contract_id)
+    if not contract:
+        return False
+    await session.delete(contract)
+    await session.commit()
+    return True
+
+
 async def list_project_contracts(
     session: AsyncSession,
     organization_id: uuid.UUID,
@@ -290,6 +303,8 @@ async def calculate_and_post_shift_revenue(
     standby_card = next((rc for rc in contract.rate_cards if rc.rate_type == RateType.STANDBY_HOURLY), None)
     if standby_card:
         standby_hours = sum(ts.hours for ts in shift_report.time_segments if ts.category.value == "STANDBY")
+        if standby_hours == 0 and getattr(shift_report, "standby_hours", None):
+            standby_hours = Decimal(str(shift_report.standby_hours))
         if standby_hours > 0:
             total_rev = standby_hours * standby_card.unit_rate
             entry = RevenueSubledgerEntry(
@@ -303,6 +318,70 @@ async def calculate_and_post_shift_revenue(
                 description=f"Rig standby time ({standby_hours} hrs)",
                 quantity=standby_hours,
                 unit_rate=standby_card.unit_rate,
+                total_revenue=total_rev,
+                currency=contract.currency,
+                exchange_rate_to_base=Decimal("1.000000"),
+                total_revenue_base=total_rev,
+                posted_at=datetime.now(UTC),
+                created_by_id=actor_id,
+                updated_by_id=actor_id,
+            )
+            session.add(entry)
+            posted_entries.append(entry)
+
+    # 3. Daywork Hourly Revenue based on Productive Time Segments / Operational Hours
+    daywork_card = next((rc for rc in contract.rate_cards if rc.rate_type == RateType.DAYWORK_HOURLY), None)
+    if daywork_card:
+        prod_hours = sum(ts.hours for ts in shift_report.time_segments if ts.category.value == "PRODUCTIVE")
+        if prod_hours == 0 and getattr(shift_report, "total_productive_hours", None):
+            prod_hours = Decimal(str(shift_report.total_productive_hours))
+        if prod_hours > 0:
+            total_rev = prod_hours * daywork_card.unit_rate
+            entry = RevenueSubledgerEntry(
+                organization_id=organization_id,
+                project_id=shift_report.project_id,
+                rig_id=shift_report.rig_id,
+                shift_report_id=shift_report.id,
+                contract_id=contract.id,
+                rate_card_id=daywork_card.id,
+                revenue_category=RevenueCategory.DAYWORK,
+                description=f"Daywork / productive operational time ({prod_hours} hrs)",
+                quantity=prod_hours,
+                unit_rate=daywork_card.unit_rate,
+                total_revenue=total_rev,
+                currency=contract.currency,
+                exchange_rate_to_base=Decimal("1.000000"),
+                total_revenue_base=total_rev,
+                posted_at=datetime.now(UTC),
+                created_by_id=actor_id,
+                updated_by_id=actor_id,
+            )
+            session.add(entry)
+            posted_entries.append(entry)
+
+    # 4. Mobilization Flat Fee (Auto-posted once per active contract)
+    mob_card = next((rc for rc in contract.rate_cards if rc.rate_type == RateType.MOBILIZATION_FLAT), None)
+    if mob_card:
+        existing_mob = await session.scalar(
+            select(RevenueSubledgerEntry).where(
+                RevenueSubledgerEntry.organization_id == organization_id,
+                RevenueSubledgerEntry.contract_id == contract.id,
+                RevenueSubledgerEntry.revenue_category == RevenueCategory.MOBILIZATION,
+            )
+        )
+        if not existing_mob:
+            total_rev = mob_card.unit_rate
+            entry = RevenueSubledgerEntry(
+                organization_id=organization_id,
+                project_id=shift_report.project_id,
+                rig_id=shift_report.rig_id,
+                shift_report_id=shift_report.id,
+                contract_id=contract.id,
+                rate_card_id=mob_card.id,
+                revenue_category=RevenueCategory.MOBILIZATION,
+                description=f"Contract Mobilization Flat Fee — {mob_card.description or contract.title}",
+                quantity=Decimal("1.0"),
+                unit_rate=mob_card.unit_rate,
                 total_revenue=total_rev,
                 currency=contract.currency,
                 exchange_rate_to_base=Decimal("1.000000"),
@@ -486,3 +565,33 @@ async def get_rig_performance_summary(
         productive_hours=float(Decimal(str(prod_hrs or 0))),
         nonproductive_hours=float(Decimal(str(nonprod_hrs or 0))),
     )
+
+
+async def list_cost_subledger_entries(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+) -> list[CostSubledgerEntry]:
+    stmt = select(CostSubledgerEntry).where(
+        CostSubledgerEntry.organization_id == organization_id
+    )
+    if project_id:
+        stmt = stmt.where(CostSubledgerEntry.project_id == project_id)
+    stmt = stmt.order_by(CostSubledgerEntry.posted_at.desc())
+    result = await session.scalars(stmt)
+    return list(result.all())
+
+
+async def list_revenue_subledger_entries(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+) -> list[RevenueSubledgerEntry]:
+    stmt = select(RevenueSubledgerEntry).where(
+        RevenueSubledgerEntry.organization_id == organization_id
+    )
+    if project_id:
+        stmt = stmt.where(RevenueSubledgerEntry.project_id == project_id)
+    stmt = stmt.order_by(RevenueSubledgerEntry.posted_at.desc())
+    result = await session.scalars(stmt)
+    return list(result.all())

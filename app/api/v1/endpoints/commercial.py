@@ -16,6 +16,7 @@ from app.schemas.drilling_commercial import (
     ProjectContractResponse,
     ProjectContractUpdate,
     ProjectFinancialSummaryResponse,
+    RevenueSubledgerEntryResponse,
     RigPerformanceSummaryResponse,
 )
 from app.services import commercial as commercial_service
@@ -76,6 +77,19 @@ async def update_contract(
     return ProjectContractResponse.model_validate(contract)
 
 
+@router.delete("/contracts/{contract_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_contract(
+    contract_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    deleted = await commercial_service.delete_project_contract(
+        session, current_user.organization_id, contract_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found.")
+
+
 @router.post("/contracts/{contract_id}/rate-cards", response_model=ContractRateCardResponse, status_code=status.HTTP_201_CREATED)
 async def add_rate_card(
     contract_id: uuid.UUID,
@@ -92,6 +106,18 @@ async def add_rate_card(
         raise HTTPException(status_code=400, detail=str(err))
 
 
+@router.get("/cost-entries", response_model=list[CostSubledgerEntryResponse])
+async def list_cost_entries(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    project_id: uuid.UUID | None = Query(None),
+) -> list[CostSubledgerEntryResponse]:
+    entries = await commercial_service.list_cost_subledger_entries(
+        session, current_user.organization_id, project_id=project_id
+    )
+    return [CostSubledgerEntryResponse.model_validate(e) for e in entries]
+
+
 @router.post("/cost-entries", response_model=CostSubledgerEntryResponse, status_code=status.HTTP_201_CREATED)
 async def post_cost(
     payload: CostSubledgerEntryCreate,
@@ -102,6 +128,18 @@ async def post_cost(
         session, current_user.organization_id, payload, actor_id=current_user.id
     )
     return CostSubledgerEntryResponse.model_validate(entry)
+
+
+@router.get("/revenue-entries", response_model=list[RevenueSubledgerEntryResponse])
+async def list_revenue_entries(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    project_id: uuid.UUID | None = Query(None),
+) -> list[RevenueSubledgerEntryResponse]:
+    entries = await commercial_service.list_revenue_subledger_entries(
+        session, current_user.organization_id, project_id=project_id
+    )
+    return [RevenueSubledgerEntryResponse.model_validate(e) for e in entries]
 
 
 @router.get("/projects/{project_id}/financials", response_model=ProjectFinancialSummaryResponse)

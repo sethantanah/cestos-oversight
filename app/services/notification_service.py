@@ -1,16 +1,14 @@
 """Service for managing notifications, resolution, forwarding, and automated schedule evaluation."""
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
-from typing import Any, Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import NotFoundError, ValidationError
-from app.models import Asset, Employee, Location, Project, User
-from app.models import inventory as inv_models
-from app.models.employee import EmployeeDocument
+from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
+from app.models import Employee, User
 from app.models.hr import (
     EmailDelivery,
     Notification,
@@ -37,10 +35,8 @@ class NotificationService:
             select(Notification)
             .where(
                 Notification.organization_id == self.actor.organization_id,
-                or_(
-                    Notification.recipient_id == self.actor.id,
-                    Notification.forwarded_from_id == self.actor.id,
-                ),
+                Notification.recipient_id == self.actor.id,
+                Notification.delivery_method.in_(["BOTH", "ON_PLATFORM"]),
             )
             .order_by(Notification.created_at.desc())
         )
@@ -57,15 +53,16 @@ class NotificationService:
             else:
                 stmt = stmt.where(Notification.read_at.is_(None))
 
-        rows = (await self.session.scalars(stmt)).all()
-
         if search:
-            q = search.lower()
-            rows = [r for r in rows if q in (r.message or "").lower()]
+            stmt = stmt.where(Notification.message.icontains(search, autoescape=True))
 
-        total = len(rows)
-        start = (page - 1) * page_size
-        paged = rows[start : start + page_size]
+        total = await self.session.scalar(
+            select(func.count()).select_from(stmt.order_by(None).subquery())
+        ) or 0
+        paged = (await self.session.scalars(
+            stmt.order_by(Notification.id.desc())
+            .offset((page - 1) * page_size).limit(page_size)
+        )).all()
 
         # Fetch names for users
         user_ids = set()
@@ -120,11 +117,22 @@ class NotificationService:
 
         return result, total
 
+    async def unread_count(self) -> int:
+        return await self.session.scalar(
+            select(func.count()).select_from(Notification).where(
+                Notification.organization_id == self.actor.organization_id,
+                Notification.recipient_id == self.actor.id,
+                Notification.delivery_method.in_(["BOTH", "ON_PLATFORM"]),
+                Notification.read_at.is_(None),
+            )
+        ) or 0
+
     async def mark_read(self, notification_id: uuid.UUID) -> dict[str, Any]:
         row = await self.session.scalar(
             select(Notification).where(
                 Notification.id == notification_id,
                 Notification.organization_id == self.actor.organization_id,
+                Notification.recipient_id == self.actor.id,
             )
         )
         if not row:
@@ -139,6 +147,7 @@ class NotificationService:
             select(Notification).where(
                 Notification.id == notification_id,
                 Notification.organization_id == self.actor.organization_id,
+                Notification.recipient_id == self.actor.id,
             )
         )
         if not row:
@@ -166,6 +175,7 @@ class NotificationService:
             select(Notification).where(
                 Notification.id == notification_id,
                 Notification.organization_id == self.actor.organization_id,
+                Notification.recipient_id == self.actor.id,
             )
         )
         if not orig:
@@ -240,10 +250,17 @@ class NotificationService:
 
     # ── Notification Schedules CRUD ──────────────────────────────────────────
 
+    def require_schedule_domain(self, domain: str) -> None:
+        from app.services.notification_schedules import allowed_domains
+        if domain not in allowed_domains(self.actor):
+            raise ForbiddenError("You do not have permission to manage schedules in this domain")
+
     async def list_schedules(self, domain: str | None = None) -> list[NotificationSchedule]:
+        from app.services.notification_schedules import allowed_domains
         stmt = (
             select(NotificationSchedule)
-            .where(NotificationSchedule.organization_id == self.actor.organization_id)
+            .where(NotificationSchedule.organization_id == self.actor.organization_id,
+                   NotificationSchedule.domain.in_(allowed_domains(self.actor)))
             .order_by(NotificationSchedule.created_at.desc())
         )
         if domain:
@@ -266,6 +283,12 @@ class NotificationService:
             recipient_roles=data.get("recipient_roles", []),
             is_active=bool(data.get("is_active", True)),
         )
+        from app.services.notification_schedules import recipients, validate_schedule
+
+        self.require_schedule_domain(schedule.domain)
+        validate_schedule(schedule)
+        if schedule.is_active and not await recipients(self.session, schedule):
+            raise ValidationError("Select recipients with active user accounts in this organization")
         self.session.add(schedule)
         await self.session.commit()
 
@@ -284,6 +307,7 @@ class NotificationService:
         )
         if not row:
             raise NotFoundError("Schedule not found")
+        self.require_schedule_domain(row.domain)
 
         for key, val in data.items():
             if val is not None and hasattr(row, key):
@@ -294,7 +318,17 @@ class NotificationService:
                 else:
                     setattr(row, key, val)
 
+        from app.services.notification_schedules import recipients, validate_schedule
+
+        self.require_schedule_domain(row.domain)
+        validate_schedule(row)
+        if row.is_active and not await recipients(self.session, row):
+            raise ValidationError("Select recipients with active user accounts in this organization")
+        row.last_run_at = None
+        row.next_run_at = None
         await self.session.commit()
+        if row.is_active:
+            await self.evaluate_schedule(row)
         return row
 
     async def delete_schedule(self, schedule_id: uuid.UUID) -> None:
@@ -306,193 +340,45 @@ class NotificationService:
         )
         if not row:
             raise NotFoundError("Schedule not found")
+        self.require_schedule_domain(row.domain)
         await self.session.delete(row)
         await self.session.commit()
 
     # ── Evaluation Engine ────────────────────────────────────────────────────
 
     async def evaluate_schedule(self, schedule: NotificationSchedule) -> int:
-        if not schedule.is_active:
-            return 0
+        from app.services.notification_schedules import evaluate
 
-        now = datetime.now(UTC)
-        today = now.date()
-        lead_date = today + timedelta(days=schedule.lead_time_days)
-        generated_count = 0
+        schedule = await self.session.scalar(
+            select(NotificationSchedule).where(
+                NotificationSchedule.id == schedule.id,
+                NotificationSchedule.organization_id == self.actor.organization_id,
+            ).with_for_update().execution_options(populate_existing=True)
+        )
+        if not schedule:
+            raise NotFoundError("Schedule not found")
+        self.require_schedule_domain(schedule.domain)
+        return await evaluate(self.session, schedule)
 
-        # Determine target user recipients
-        target_users: list[User] = []
-        if schedule.recipient_user_ids:
-            uids = [uuid.UUID(uid_str) for uid_str in schedule.recipient_user_ids if uid_str]
-            if uids:
-                target_users = list(
-                    (
-                        await self.session.scalars(
-                            select(User).where(
-                                User.id.in_(uids),
-                                User.organization_id == schedule.organization_id,
-                                User.is_active.is_(True),
-                            )
-                        )
-                    ).all()
-                )
 
-        if not target_users:
-            # Fallback to organization admin/actor user
-            target_users = [self.actor]
+async def notify_assigned_employee(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    employee_id: uuid.UUID | None,
+    message: str,
+    domain: str = "EQUIPMENT",
+    priority_tag: str = "IMPORTANT",
+    delivery_method: str = "BOTH",
+    actor_id: uuid.UUID | None = None,
+) -> bool:
+    """Queue matching inbox and email alerts for the assigned employee."""
+    from app.services.field_notifications import emit_event, employee_recipients
 
-        rule_type = (schedule.rule_type or "").upper()
-        domain = (schedule.domain or "").upper()
-
-        alerts_to_emit: list[str] = []
-
-        inventory_query = None
-        if "CONSUMABLE" in rule_type or "EXPIRY" in rule_type or "LOW_STOCK" in rule_type:
-            item_model = inv_models.InventoryItem
-            balance = inv_models.InventoryBalance
-            unit = inv_models.UnitOfMeasure
-            stock = (
-                select(func.coalesce(func.sum(balance.quantity_on_hand), 0))
-                .where(
-                    balance.item_id == item_model.id,
-                    balance.organization_id == schedule.organization_id,
-                )
-                .correlate(item_model)
-                .scalar_subquery()
-            )
-            inventory_query = (
-                select(item_model, stock.label("quantity_on_hand"), unit.symbol)
-                .join(
-                    unit,
-                    (unit.id == item_model.base_unit_id)
-                    & (unit.organization_id == schedule.organization_id),
-                )
-                .where(
-                    item_model.organization_id == schedule.organization_id,
-                    item_model.is_active.is_(True),
-                )
-            )
-
-        if "CONSUMABLE" in rule_type or "EXPIRY" in rule_type:
-            # Check inventory items expiring by lead_date
-            assert inventory_query is not None
-            items = (await self.session.execute(inventory_query)).all()
-
-            for item, quantity_on_hand, unit_symbol in items:
-                # If item has expiry_date or category indicates consumable
-                msg = (
-                    f"[{schedule.priority_tag}] Consumable Item Alert: '{item.name}' "
-                    f"(SKU/Code: {item.sku or item.item_number}) is scheduled for inspection/expiry "
-                    f"within {schedule.lead_time_days} days. "
-                    f"Current Stock: {quantity_on_hand} {unit_symbol}."
-                )
-                alerts_to_emit.append(msg)
-
-        elif "LOW_STOCK" in rule_type:
-            assert inventory_query is not None
-            items = (
-                await self.session.execute(
-                    inventory_query.where(stock <= inv_models.InventoryItem.reorder_point)
-                )
-            ).all()
-            for item, quantity_on_hand, unit_symbol in items:
-                msg = (
-                    f"[{schedule.priority_tag}] Low Stock Alert: '{item.name}' "
-                    f"(Code: {item.sku or item.item_number}) has reached reorder point! "
-                    f"Current: {quantity_on_hand} {unit_symbol} "
-                    f"(Reorder Point: {item.reorder_point})."
-                )
-                alerts_to_emit.append(msg)
-
-        elif "WORKFORCE" in domain or "DOCUMENT" in rule_type:
-            docs = (
-                await self.session.scalars(
-                    select(EmployeeDocument).where(
-                        EmployeeDocument.organization_id == schedule.organization_id,
-                        EmployeeDocument.expiry_date.is_not(None),
-                        EmployeeDocument.expiry_date <= lead_date,
-                        EmployeeDocument.expiry_date >= today,
-                    )
-                )
-            ).all()
-            for doc in docs:
-                msg = (
-                    f"[{schedule.priority_tag}] Workforce Document Alert: Document '{doc.document_type}' "
-                    f"expires on {doc.expiry_date.isoformat()} (in {schedule.lead_time_days} days)."
-                )
-                alerts_to_emit.append(msg)
-
-        elif "EQUIPMENT" in domain or "MAINTENANCE" in rule_type:
-            assets = (
-                await self.session.scalars(
-                    select(Asset).where(
-                        Asset.organization_id == schedule.organization_id,
-                        Asset.is_active.is_(True),
-                        Asset.status.in_(["BREAKDOWN", "MAINTENANCE", "QUARANTINE"]),
-                    )
-                )
-            ).all()
-            for asset in assets:
-                msg = (
-                    f"[{schedule.priority_tag}] Equipment Operational Alert: Equipment '{asset.asset_name}' "
-                    f"(Tag: {asset.asset_tag}) status is '{asset.status}' requiring attention."
-                )
-                alerts_to_emit.append(msg)
-
-        elif "PROJECT" in domain:
-            projects = (
-                await self.session.scalars(
-                    select(Project).where(
-                        Project.organization_id == schedule.organization_id,
-                        Project.status.in_(["ACTIVE", "MOBILIZING"]),
-                    )
-                )
-            ).all()
-            for proj in projects:
-                msg = (
-                    f"[{schedule.priority_tag}] Project Schedule Alert: Project '{proj.name}' "
-                    f"is active and undergoing schedule evaluation for operational milestones."
-                )
-                alerts_to_emit.append(msg)
-
-        # Emit notifications for target users
-        for msg in alerts_to_emit[:10]:  # Cap per evaluation run
-            for u in target_users:
-                # Avoid duplicate identical unread notifications
-                existing = await self.session.scalar(
-                    select(Notification).where(
-                        Notification.organization_id == schedule.organization_id,
-                        Notification.recipient_id == u.id,
-                        Notification.message == msg,
-                        Notification.is_resolved.is_(False),
-                    )
-                )
-                if not existing:
-                    notif = Notification(
-                        id=uuid.uuid4(),
-                        organization_id=schedule.organization_id,
-                        recipient_id=u.id,
-                        message=msg,
-                        domain=domain or "INVENTORY",
-                        priority_tag=schedule.priority_tag,
-                        delivery_method=schedule.delivery_method,
-                        schedule_id=schedule.id,
-                    )
-                    self.session.add(notif)
-                    generated_count += 1
-
-                    if schedule.delivery_method in ("EMAIL", "BOTH"):
-                        self.session.add(
-                            EmailDelivery(
-                                organization_id=schedule.organization_id,
-                                recipient_id=u.id,
-                                kind="SCHEDULED_ALERT",
-                                message=msg,
-                                next_attempt_at=now,
-                            )
-                        )
-
-        schedule.last_run_at = now
-        schedule.next_run_at = now + timedelta(days=1)
-        await self.session.commit()
-        return generated_count
+    recipients = await employee_recipients(session, organization_id, employee_id)
+    if not recipients:
+        return False
+    await emit_event(
+        session, organization_id, recipients, f"assigned:{employee_id}:{message}",
+        message, domain.upper(), "EMPLOYEE_ALERT", priority_tag.upper(), delivery_method.upper(),
+    )
+    return True

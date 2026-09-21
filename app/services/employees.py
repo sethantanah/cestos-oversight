@@ -208,6 +208,28 @@ class EmployeeService:
         read = EmployeeRead.model_validate(employee)
         avail = await availability_map(self.session, self.actor.organization_id, [employee])
         read.availability_status = avail.get(employee.id)
+        current = (
+            await self.session.scalars(
+                organization_query(EmployeeAssignment, self.actor.organization_id)
+                .where(
+                    EmployeeAssignment.employee_id == employee.id,
+                    EmployeeAssignment.status == AssignmentStatus.ACTIVE,
+                )
+                .order_by(EmployeeAssignment.start_date.desc())
+                .limit(1)
+            )
+        ).first()
+        if current:
+            read.current_project_id = current.project_id
+            read.current_location_id = current.location_id
+            if current.project_id:
+                project = await self.session.get(Project, current.project_id)
+                if project and project.organization_id == self.actor.organization_id:
+                    read.current_project_name = project.name
+            if current.location_id:
+                location = await self.session.get(Location, current.location_id)
+                if location and location.organization_id == self.actor.organization_id:
+                    read.current_location_name = location.name
         return self.operational_read(read)
 
     async def get_full(self, employee_id: uuid.UUID) -> EmployeeFull:
@@ -399,9 +421,53 @@ class EmployeeService:
         page_size: int,
     ) -> Page[EmployeeRead]:
         items = []
+        emp_ids = [r.id for r in rows]
+        assign_map: dict[uuid.UUID, EmployeeAssignment] = {}
+        proj_map: dict[uuid.UUID, str] = {}
+        loc_map: dict[uuid.UUID, str] = {}
+        if emp_ids:
+            assignments = (
+                await self.session.scalars(
+                    select(EmployeeAssignment).where(
+                        EmployeeAssignment.organization_id == self.actor.organization_id,
+                        EmployeeAssignment.employee_id.in_(emp_ids),
+                        EmployeeAssignment.status == AssignmentStatus.ACTIVE,
+                    )
+                )
+            ).all()
+            assign_map = {a.employee_id: a for a in assignments}
+            proj_ids = [a.project_id for a in assignments if a.project_id]
+            if proj_ids:
+                projects = (
+                    await self.session.scalars(
+                        select(Project).where(
+                            Project.organization_id == self.actor.organization_id,
+                            Project.id.in_(proj_ids),
+                        )
+                    )
+                ).all()
+                proj_map = {p.id: p.name for p in projects}
+            loc_ids = [a.location_id for a in assignments if a.location_id]
+            if loc_ids:
+                locations = (
+                    await self.session.scalars(
+                        select(Location).where(
+                            Location.organization_id == self.actor.organization_id,
+                            Location.id.in_(loc_ids),
+                        )
+                    )
+                ).all()
+                loc_map = {loc.id: loc.name for loc in locations}
+
         for row in rows:
             read = EmployeeRead.model_validate(row)
             read.availability_status = avail.get(row.id)
+            asgn = assign_map.get(row.id)
+            if asgn:
+                read.current_project_id = asgn.project_id
+                read.current_project_name = proj_map.get(asgn.project_id)
+                read.current_location_id = asgn.location_id
+                read.current_location_name = loc_map.get(asgn.location_id)
             items.append(self.operational_read(read))
         return Page(
             items=items,
@@ -841,7 +907,23 @@ class EmployeeService:
                 .order_by(EmployeeAssignment.start_date.desc())
             )
         ).all()
-        return [EmployeeAssignmentRead.model_validate(row) for row in rows]
+        # Resolve project names in one query
+        project_ids = list({r.project_id for r in rows if r.project_id})
+        project_names: dict[uuid.UUID, str] = {}
+        if project_ids:
+            projects = (
+                await self.session.scalars(
+                    select(Project).where(Project.id.in_(project_ids))
+                )
+            ).all()
+            project_names = {p.id: p.name for p in projects}
+        result = []
+        for row in rows:
+            data = EmployeeAssignmentRead.model_validate(row)
+            data.project_name = project_names.get(row.project_id)
+            result.append(data)
+        return result
+
 
     async def get_assignment(self, assignment_id: uuid.UUID) -> EmployeeAssignmentRead:
         assignment = (
@@ -912,6 +994,9 @@ class EmployeeService:
                 },
                 **_meta(request),
             )
+            from app.services.field_notifications import notify_assignment
+
+            await notify_assignment(self.session, assignment)
             await self.session.commit()
             return EmployeeAssignmentRead.model_validate(assignment)
         except (NotFoundError, ConflictError, ValidationError):
@@ -1058,6 +1143,9 @@ class EmployeeService:
                 ),
                 **_meta(request),
             )
+            from app.services.field_notifications import notify_assignment
+
+            await notify_assignment(self.session, assignment)
             await self.session.commit()
             return EmployeeAssignmentRead.model_validate(assignment)
         except (NotFoundError, ConflictError, ValidationError):
@@ -1171,6 +1259,9 @@ class EmployeeService:
                 },
                 **_meta(request),
             )
+            from app.services.field_notifications import notify_assignment
+
+            await notify_assignment(self.session, assignment)
             await self.session.commit()
             return EmployeeAssignmentRead.model_validate(assignment)
         except (NotFoundError, ConflictError, ValidationError):
