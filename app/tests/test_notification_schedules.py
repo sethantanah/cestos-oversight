@@ -268,3 +268,19 @@ async def test_update_notification_schedule_updates_fields_and_evaluates(schedul
             f.schedule.id,
             {"recipient_user_ids": [f.outsider.id], "recipient_roles": []},
         )
+
+
+@pytest.mark.parametrize("rule", ["WORKFORCE_TRAINING_DUE", "WORKFORCE_TRAINING_EXPIRY"])
+async def test_training_schedule_matches_real_dates_and_excludes_cancelled(scheduled, rule):
+    from app.models.employee import EmployeeTrainingRecord
+    f = scheduled
+    f.schedule.rule_type = rule
+    course = EmployeeTrainingRecord(organization_id=f.org.id, employee_id=f.employee.id,
+        training_name="Safety", status="PLANNED" if rule.endswith("DUE") else "COMPLETED",
+        start_date=NOW.date() + timedelta(days=2), expiry_date=NOW.date() + timedelta(days=4))
+    f.session.add(course)
+    f.session.commit()
+    assert len(await matching_alerts(f.db, f.schedule, NOW.date())) == 1
+    course.status = "CANCELLED"
+    f.session.commit()
+    assert await matching_alerts(f.db, f.schedule, NOW.date()) == []

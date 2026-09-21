@@ -12,7 +12,6 @@ RUN .venv/bin/python -c "import numpy, faiss, fastembed, rapidocr_onnxruntime, p
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY scripts ./scripts
-COPY frontend ./frontend
 ENV DOCUMENT_INDEX_DIR=/home/cestos/document-index
 RUN useradd --create-home --uid 10001 cestos
 USER cestos

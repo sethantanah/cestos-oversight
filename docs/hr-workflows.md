@@ -26,14 +26,16 @@ SMTP_USERNAME=cestos
 SMTP_PASSWORD=your-secret
 SMTP_FROM=hr@example.com
 SMTP_STARTTLS=true
-PUBLIC_BASE_URL=https://your-frontend.example.com
+PUBLIC_BASE_URL=https://cestos.qoteport.workers.dev
 SCHEDULER_ENABLED=true
 SCHEDULER_INTERVAL_SECONDS=60
 ```
 
 Put real credentials in the server environment or local `.env`, never source control.
-PUBLIC_BASE_URL is the frontend URL, not the API root. The bundled local UI is development/
-test only; a production frontend must implement the same `#reset=` flow or use the reset API.
+PUBLIC_BASE_URL is the frontend origin, not the API root. Password-reset emails link to
+`https://cestos.qoteport.workers.dev/sign-up-login#reset=...`. The test UI has been removed.
+`fly.toml` sets the production frontend origin. If Fly already has a PUBLIC_BASE_URL secret,
+update that secret to the same frontend origin (secrets override fly.toml environment values).
 No credentials have been invented or configured. Queue entries stay pending until SMTP_HOST
 and SMTP_FROM exist. Failures retry with exponential backoff; after ten attempts, an HR
 administrator can retry from Email delivery. SMTP has at-least-once delivery: a crash after

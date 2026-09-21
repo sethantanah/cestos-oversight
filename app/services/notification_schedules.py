@@ -10,7 +10,7 @@ from sqlalchemy import and_, func, or_, select
 from app.core.dependencies import scoped_roles
 from app.core.exceptions import ValidationError
 from app.models import Asset, Employee, Organization, Project, Role, User
-from app.models.employee import EmployeeDocument, EmployeeRotation
+from app.models.employee import EmployeeDocument, EmployeeRotation, EmployeeTrainingRecord, LeaveRequest
 from app.models.hr import NotificationSchedule
 from app.models.inventory import InventoryBalance, InventoryItem, InventoryLot
 from app.models.maintenance_hse import MaintenanceWorkOrder
@@ -21,6 +21,11 @@ from app.services.field_notifications import emit_event
 RULES = {
     "WORKFORCE_DOCUMENT_EXPIRY": "WORKFORCE",
     "WORKFORCE_ROTATION_DUE": "WORKFORCE",
+    "WORKFORCE_LEAVE_PENDING": "WORKFORCE",
+    "WORKFORCE_LEAVE_UPCOMING": "WORKFORCE",
+    "WORKFORCE_TRAINING_DUE": "WORKFORCE",
+    "WORKFORCE_TRAINING_EXPIRY": "WORKFORCE",
+    "WORKFORCE_CONTRACT_EXPIRY": "WORKFORCE",
     "INVENTORY_CONSUMABLES_EXPIRY": "INVENTORY",
     "INVENTORY_LOW_STOCK": "INVENTORY",
     "EQUIPMENT_MAINTENANCE_DUE": "EQUIPMENT",
@@ -298,6 +303,29 @@ async def matching_alerts(session, schedule, today):
                     f"{project.expected_end_date.isoformat()}.",
                 )
             )
+    if rule in {"WORKFORCE_LEAVE_PENDING", "WORKFORCE_LEAVE_UPCOMING"}:
+        query = select(LeaveRequest).where(LeaveRequest.organization_id == org,
+            LeaveRequest.end_date >= today,
+            LeaveRequest.status == ("PENDING" if rule.endswith("PENDING") else "APPROVED"))
+        if rule.endswith("UPCOMING"):
+            query = query.where(LeaveRequest.start_date >= today, LeaveRequest.start_date <= cutoff)
+        for leave in (await session.scalars(query)).all():
+            alerts.append((str(leave.id), f"Leave request {leave.id} ({leave.start_date} to {leave.end_date}) is {leave.status.lower()}."))
+    elif rule in {"WORKFORCE_TRAINING_DUE", "WORKFORCE_TRAINING_EXPIRY"}:
+        upcoming = rule.endswith("DUE")
+        due_date = EmployeeTrainingRecord.start_date if upcoming else EmployeeTrainingRecord.expiry_date
+        query = select(EmployeeTrainingRecord).where(EmployeeTrainingRecord.organization_id == org,
+            EmployeeTrainingRecord.is_active.is_(True), EmployeeTrainingRecord.archived_at.is_(None),
+            EmployeeTrainingRecord.status.in_(["PLANNED", "IN_PROGRESS"] if upcoming else ["COMPLETED", "EXPIRED"]),
+            due_date <= cutoff)
+        if upcoming:
+            query = query.where(due_date >= today)
+        for training in (await session.scalars(query)).all():
+            alerts.append((str(training.id), f"Training '{training.training_name}' {'starts' if upcoming else 'expires'} on {training.start_date if upcoming else training.expiry_date}."))
+    elif rule == "WORKFORCE_CONTRACT_EXPIRY":
+        for employee in (await session.scalars(select(Employee).where(Employee.organization_id == org,
+            Employee.is_active.is_(True), Employee.archived_at.is_(None), Employee.contract_end_date <= cutoff))).all():
+            alerts.append((str(employee.id), f"Employment contract for {employee.first_name} {employee.last_name} ends on {employee.contract_end_date}."))
     return alerts
 
 

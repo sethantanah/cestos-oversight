@@ -20,11 +20,11 @@ from app.models import (
     Role,
     User,
 )
-from app.models.employee import EmployeeDocument, LeaveRequest
+from app.models.employee import EmployeeDocument, EmployeeTrainingRecord, LeaveRequest
 from app.models.hr import EmailDelivery, Notification
 from app.models.maintenance_hse import MaintenanceWorkOrder, WorkOrderCostLine
 from app.models.operational_logs import AssetMaintenanceJob
-from app.models.role import user_roles
+from app.models.role import Permission, role_permissions, user_roles
 from app.services.field_notifications import (
     emit_event,
     employee_recipients,
@@ -80,9 +80,11 @@ def field_db():
         Organization,
         User,
         Role,
+        Permission,
         Employee,
         EmployeeAssignment,
         EmployeeDocument,
+        EmployeeTrainingRecord,
         LeaveRequest,
         Notification,
         EmailDelivery,
@@ -93,6 +95,7 @@ def field_db():
     for model in models:
         model.__table__.create(engine)
     user_roles.create(engine)
+    role_permissions.create(engine)
     with Session(engine, expire_on_commit=False) as session:
         org = Organization(name="Field")
         other_org = Organization(name="Other")
@@ -428,3 +431,41 @@ async def test_failed_smtp_keeps_email_queued_without_duplicating_inbox(field_db
         )
         == 0
     )
+
+
+async def test_training_participant_alerts_and_scheduler_reminders_are_deduplicated(field_db):
+    from app.services.field_notifications import generate_people_alerts, notify_training
+    f = field_db
+    today = date.today()
+    course = EmployeeTrainingRecord(organization_id=f.org.id, employee_id=f.employee.id,
+        training_name="Rig Safety", provider="Site Academy", start_date=today + timedelta(days=3), status="PLANNED")
+    f.session.add(course)
+    f.session.commit()
+    assert await notify_training(f.db, course) == 1
+    assert await notify_training(f.db, course) == 0
+    assert await generate_people_alerts(f.db, f.org.id, today) == 1
+    assert await generate_people_alerts(f.db, f.org.id, today) == 0
+    alerts = f.session.scalars(select(Notification)).all()
+    assert len(alerts) == 2 and {row.recipient_id for row in alerts} == {f.worker.id}
+    course.status = "CANCELLED"
+    course.updated_at = datetime.now(UTC)
+    assert await notify_training(f.db, course, changed=True) == 1
+    assert await generate_people_alerts(f.db, f.org.id, today) == 0
+
+
+async def test_leave_request_notifies_hr_approver_and_decision_notifies_employee(field_db):
+    f = field_db
+    permission = Permission(code="employees.leave.approve")
+    role = Role(name="HR Approver", organization_id=f.org.id)
+    f.session.add_all([permission, role]); f.session.flush()
+    f.session.execute(role_permissions.insert().values(role_id=role.id, permission_id=permission.id))
+    f.session.execute(user_roles.insert().values(role_id=role.id, user_id=f.manager.id))
+    leave = LeaveRequest(organization_id=f.org.id, employee_id=f.employee.id,
+        start_date=date.today(), end_date=date.today() + timedelta(days=2), status="PENDING")
+    f.session.add(leave); f.session.commit()
+    await notify_leave(f.db, leave)
+    recipients = set(f.session.scalars(select(Notification.recipient_id)).all())
+    assert f.manager.id in recipients and f.outsider.id not in recipients
+    leave.status = "APPROVED"
+    await notify_leave(f.db, leave)
+    assert f.worker.id in set(f.session.scalars(select(Notification.recipient_id)).all())

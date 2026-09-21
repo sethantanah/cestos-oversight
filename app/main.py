@@ -2,14 +2,12 @@ import asyncio
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.router import router
@@ -106,7 +104,4 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_exception_handlers(app)
     app.include_router(router)
     app.include_router(health_router)
-    frontend = Path(__file__).resolve().parent.parent / "frontend"
-    if settings.app_env != "production" and frontend.is_dir():
-        app.mount("/test-ui", StaticFiles(directory=frontend, html=True), name="test-ui")
     return app

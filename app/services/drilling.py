@@ -1012,7 +1012,7 @@ async def get_shift_daily_context(
 ) -> dict[str, Any]:
     from app.models.asset import Asset, AssetMeterReading
     from app.models.asset_records import AssetDefect
-    from app.models.inventory import InventoryIssue, InventoryItem
+    from app.services.field_consumables import consumption_rows
     from app.models.maintenance_hse import HseIncident
     from app.models.operational_logs import AssetFuelLog
 
@@ -1023,38 +1023,16 @@ async def get_shift_daily_context(
     report_date = report.date
     project_id = report.project_id
 
-    # 1. Inventory Store Consumptions
-    issues_stmt = (
-        select(InventoryIssue)
-        .options(selectinload(InventoryIssue.items))
-        .where(
-            InventoryIssue.organization_id == organization_id,
-            InventoryIssue.project_id == project_id,
-            func.date(InventoryIssue.transaction_date) == report_date,
-        )
-    )
-    issues_rows = (await session.scalars(issues_stmt)).all()
-    consumptions = []
-    for issue in issues_rows:
-        for item in (issue.items or []):
-            item_name = "Inventory Item"
-            if item.item_id:
-                inv_item = await session.scalar(select(InventoryItem).where(InventoryItem.id == item.item_id))
-                if inv_item:
-                    item_name = inv_item.name
-            consumptions.append({
-                "issue_number": issue.issue_number,
-                "item_name": item_name,
-                "quantity": float(item.quantity or 0),
-                "unit": item.unit_of_measure or "units",
-                "total_cost": float(item.total_cost or 0) if item.total_cost else 0.0,
-                "notes": issue.notes or item.notes or "",
-            })
+    consumptions = [
+        {**row, "issue_number": row["document_number"]}
+        for row in await consumption_rows(session, organization_id, project_id, report_date)
+    ]
 
     # 2. Fuel Reports & Logs
     fuel_stmt = select(AssetFuelLog).where(
         AssetFuelLog.organization_id == organization_id,
-        AssetFuelLog.log_date == report_date,
+        func.date(AssetFuelLog.recorded_at) == report_date,
+        AssetFuelLog.asset_id == report.rig_id,
     )
     fuel_rows = (await session.scalars(fuel_stmt)).all()
     fuel_logs = []
@@ -1067,18 +1045,19 @@ async def get_shift_daily_context(
         fuel_logs.append({
             "asset_id": str(f.asset_id),
             "asset_name": asset_name,
-            "fuel_quantity": float(f.fuel_quantity or 0),
-            "fuel_unit": f.fuel_unit or "Litres",
-            "total_cost": float(f.total_cost or 0) if f.total_cost else None,
+            "fuel_quantity": float(f.quantity_litres or 0),
+            "fuel_unit": "Litres",
+            "total_cost": float(f.quantity_litres * f.unit_cost),
             "meter_reading": float(f.meter_reading) if f.meter_reading is not None else None,
-            "operator_name": f.operator_name or "",
-            "supplier_name": f.supplier_name or "",
+            "operator_name": "",
+            "supplier_name": f.supplier or "",
         })
 
     # 3. Meter Readings
     meter_stmt = select(AssetMeterReading).where(
         AssetMeterReading.organization_id == organization_id,
-        AssetMeterReading.reading_date == report_date,
+        func.date(AssetMeterReading.recorded_at) == report_date,
+        AssetMeterReading.asset_id == report.rig_id,
     )
     meter_rows = (await session.scalars(meter_stmt)).all()
     meter_readings = []
@@ -1091,9 +1070,9 @@ async def get_shift_daily_context(
         meter_readings.append({
             "asset_id": str(m.asset_id),
             "asset_name": asset_name,
-            "meter_type": str(m.meter_type.value if hasattr(m.meter_type, "value") else m.meter_type),
-            "value": float(m.reading_value or 0),
-            "unit": m.unit_of_measure or "Hours",
+            "meter_type": str(m.reading_type.value if hasattr(m.reading_type, "value") else m.reading_type),
+            "value": float(m.reading or 0),
+            "unit": str(m.reading_type.value if hasattr(m.reading_type, "value") else m.reading_type),
             "notes": m.notes or "",
         })
 
@@ -1101,6 +1080,7 @@ async def get_shift_daily_context(
     defects_stmt = select(AssetDefect).where(
         AssetDefect.organization_id == organization_id,
         func.date(AssetDefect.reported_at) == report_date,
+        AssetDefect.asset_id == report.rig_id,
     )
     defects_rows = (await session.scalars(defects_stmt)).all()
     faults = []

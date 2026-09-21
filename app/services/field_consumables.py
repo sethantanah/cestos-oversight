@@ -4,10 +4,10 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from app.core.exceptions import ForbiddenError, ValidationError
-from app.models.inventory import InventoryIssue, InventoryIssueItem, InventoryItem, InventoryStore, UnitOfMeasure
+from app.models.inventory import InventoryIssue, InventoryIssueItem, InventoryItem, InventoryStore, UnitOfMeasure, InventoryBalance, InventoryBin, InventoryLot, InventorySerial
 from app.schemas.inventory import InventoryAction, InventoryDocumentCreate, InventoryLine
 from app.services.field_equipment import require_project
 from app.services.field_work import is_supervisor
@@ -71,13 +71,29 @@ async def consumption_options(session, actor, project_id):
         InventoryStore.organization_id == actor.organization_id,
         InventoryStore.is_active.is_(True), InventoryStore.archived_at.is_(None))
         .order_by(InventoryStore.name))
-    return {"items": [dict(row) for row in items.mappings()], "stores": [dict(row) for row in stores.mappings()]}
+    stock = await session.execute(select(InventoryBalance.id, InventoryBalance.item_id,
+        InventoryBalance.store_id, InventoryBalance.bin_id, InventoryBalance.lot_id,
+        InventoryBin.code.label("bin"), InventoryLot.lot_number.label("lot"),
+        (InventoryBalance.quantity_on_hand - InventoryBalance.quantity_reserved - InventoryBalance.quantity_quarantined).label("available"))
+        .outerjoin(InventoryBin, InventoryBin.id == InventoryBalance.bin_id)
+        .outerjoin(InventoryLot, InventoryLot.id == InventoryBalance.lot_id)
+        .where(InventoryBalance.organization_id == actor.organization_id, InventoryBalance.quantity_on_hand > 0))
+    serials = await session.execute(select(InventorySerial.id, InventorySerial.item_id,
+        InventorySerial.current_store_id.label("store_id"), InventorySerial.current_bin_id.label("bin_id"),
+        InventorySerial.lot_id, InventorySerial.serial_number).where(
+        InventorySerial.organization_id == actor.organization_id, InventorySerial.status == "IN_STOCK"))
+    return {"items": [dict(row) for row in items.mappings()], "stores": [dict(row) for row in stores.mappings()],
+        "stock": [dict(row) for row in stock.mappings()], "serials": [dict(row) for row in serials.mappings()]}
 
 
 class AtomicInventoryService(InventoryService):
     async def commit(self):
         # Create and post together: invalid stock must not leave a duplicate draft behind.
         await self.session.flush()
+        for row in list(self.session.identity_map.values()):
+            expired = inspect(row).expired_attributes
+            if expired:
+                await self.session.refresh(row, attribute_names=list(expired))
 
 
 async def log_consumption(session, actor, body):

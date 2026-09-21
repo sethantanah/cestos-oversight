@@ -1822,6 +1822,9 @@ class TrainingService:
                 new_values={"employee_id": str(employee_id), "training_name": body.training_name},
                 **_meta(request),
             )
+            from app.services.field_notifications import notify_training
+
+            await notify_training(self.session, record, changed=False)
             await self.session.commit()
             return EmployeeTrainingRead.model_validate(record)
         except (NotFoundError, ConflictError, ValidationError):
@@ -1864,6 +1867,9 @@ class TrainingService:
                 entity_id=record.id,
                 **_meta(request),
             )
+            from app.services.field_notifications import notify_training
+
+            await notify_training(self.session, record, changed=True)
             await self.session.commit()
             return EmployeeTrainingRead.model_validate(record)
         except (NotFoundError, ConflictError, ValidationError):

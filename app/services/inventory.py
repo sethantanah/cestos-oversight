@@ -457,7 +457,7 @@ class InventoryService:
             unit_cost=cost,
             total_cost=(q * cost).quantize(SCALE),
             currency=item.default_currency,
-            transaction_date=datetime.now(UTC),
+            transaction_date=doc.transaction_date,
             reason=getattr(doc, "reason", None),
             notes=getattr(doc, "notes", None),
             created_by_id=self.actor.id,

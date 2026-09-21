@@ -10,6 +10,7 @@ primary_region = 'lhr'
 
 [env]
   APP_ENV = 'production'
+  PUBLIC_BASE_URL = 'https://cestos.qoteport.workers.dev'
   LOG_LEVEL = 'info'
   PORT = '8000'
   TZ = 'UTC'

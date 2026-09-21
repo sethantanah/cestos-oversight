@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
     smtp_from_name: str | None = "Cestos Operations"
     smtp_starttls: bool = True
     smtp_use_ssl: bool = False
-    public_base_url: str = "http://localhost:3000/sign-up-login"
+    public_base_url: str = "http://localhost:3000"
     storage_dir: str = "storage"
     max_upload_size_mb: int = Field(default=10, ge=1, le=100)
     storage_provider: Literal["local", "supabase"] = "local"
@@ -49,6 +50,17 @@ class Settings(BaseSettings):
     enable_agent_logging: bool = True
     agent_log_path: str = "logs/agent_execution.log"
 
+
+    @field_validator("public_base_url")
+    @classmethod
+    def frontend_origin(cls, value: str) -> str:
+        url = urlsplit(value.strip())
+        if (url.scheme not in {"http", "https"} or not url.hostname
+                or url.username or url.password or url.query or url.fragment
+                or url.path.rstrip("/") not in {"", "/sign-up-login"}
+                or url.hostname.lower() == "cestos-oversight.fly.dev"):
+            raise ValueError("PUBLIC_BASE_URL must be the frontend origin, not the API or test UI URL")
+        return urlunsplit((url.scheme, url.netloc, "", "", ""))
 
     @field_validator("database_url")
     @classmethod

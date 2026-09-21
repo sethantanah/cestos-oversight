@@ -133,7 +133,7 @@ class SupabaseStorage:
                 for item in buckets
             }
             if self.bucket not in bucket_names:
-                self.client.storage.create_bucket(self.bucket, {"public": True})
+                self.client.storage.create_bucket(self.bucket, options={"public": True})
         except Exception:
             pass
 
@@ -144,9 +144,9 @@ class SupabaseStorage:
                 for b in self.client.storage.list_buckets()
             }
             if self.document_bucket not in names:
-                self.client.storage.create_bucket(self.document_bucket, {"public": False})
+                self.client.storage.create_bucket(self.document_bucket, options={"public": False})
             else:
-                self.client.storage.update_bucket(self.document_bucket, {"public": False})
+                self.client.storage.update_bucket(self.document_bucket, options={"public": False})
             self.private_bucket_ready = True
         return self.client.storage.from_(self.document_bucket)
 

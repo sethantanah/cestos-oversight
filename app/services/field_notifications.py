@@ -23,7 +23,7 @@ from app.models.employee import EmployeeDocument, LeaveRequest
 from app.models.hr import EmailDelivery, Notification
 from app.models.maintenance_hse import MaintenanceWorkOrder
 from app.models.operational_logs import AssetMaintenanceJob
-from app.models.role import user_roles
+from app.models.role import Permission, role_permissions, user_roles
 from app.services.employee_access import supervised_employee_ids
 
 
@@ -213,6 +213,20 @@ async def notify_assignment(session: AsyncSession, assignment: EmployeeAssignmen
     )
 
 
+async def leave_approver_recipients(session, organization_id, employee_id):
+    recipients = await supervisor_recipients(session, organization_id, employee_id)
+    permitted_roles = select(Role.id).join(role_permissions, role_permissions.c.role_id == Role.id).join(
+        Permission, Permission.id == role_permissions.c.permission_id).where(
+        Permission.code == "employees.leave.approve",
+        or_(Role.organization_id == organization_id,
+            and_(Role.is_system_role.is_(True), Role.organization_id.is_(None))))
+    recipients.update((await session.scalars(select(User.id).where(
+        User.organization_id == organization_id, User.is_active.is_(True), User.archived_at.is_(None),
+        or_(User.is_superuser.is_(True), User.id.in_(select(user_roles.c.user_id).where(
+            user_roles.c.role_id.in_(permitted_roles))))))).all())
+    return recipients
+
+
 async def notify_leave(session: AsyncSession, leave: LeaveRequest) -> int:
     employee = Employee.__table__
     person = (
@@ -226,11 +240,11 @@ async def notify_leave(session: AsyncSession, leave: LeaveRequest) -> int:
     if not person:
         return 0
     if leave.status == "PENDING":
-        recipients = await supervisor_recipients(session, leave.organization_id, leave.employee_id)
+        recipients = await leave_approver_recipients(session, leave.organization_id, leave.employee_id)
         message = (
             f"{person.first_name} {person.last_name} requested {leave.leave_type or 'leave'} "
             f"from {leave.start_date} to {leave.end_date}. "
-            "Review the request in Field Portal > Site Team & Personnel."
+            "Review the request in leave management or Field Portal > Site Team & Personnel."
         )
         kind = "LEAVE_REQUESTED"
     else:
@@ -321,6 +335,7 @@ async def generate_field_alerts(session: AsyncSession, today: date | None = None
         )
     ).all()
     for org_id in organizations:
+        total += await generate_people_alerts(session, org_id, today)
         people = (
             await session.scalars(
                 select(Employee).where(
@@ -399,4 +414,63 @@ async def generate_field_alerts(session: AsyncSession, today: date | None = None
                     "CRITICAL" if overdue else "IMPORTANT",
                 )
     await session.commit()
+    return total
+
+
+async def notify_training(session, training, *, changed=False):
+    recipients = await employee_recipients(session, training.organization_id, training.employee_id)
+    state = str(training.status)
+    key = f"training:{training.id}:{training.updated_at if changed else 'created'}:{state}"
+    action = "updated" if changed else "planned"
+    return await emit_event(session, training.organization_id, recipients, key,
+        f"Training '{training.training_name}' has been {action} for you. "
+        f"Start: {training.start_date or 'to be confirmed'}. Provider: {training.provider or 'to be confirmed'}. "
+        f"Status: {state.replace('_', ' ').lower()}.", "WORKFORCE", "TRAINING_UPDATED" if changed else "TRAINING_PLANNED")
+
+
+async def generate_people_alerts(session, org_id, today):
+    """Catch up events and send bounded leave/training reminders without duplicate delivery."""
+    from app.models.employee import EmployeeTrainingRecord
+    total = 0
+    leaves = (await session.scalars(select(LeaveRequest).where(
+        LeaveRequest.organization_id == org_id, LeaveRequest.end_date >= today))).all()
+    for leave in leaves:
+        total += await notify_leave(session, leave)
+        if leave.status == "PENDING":
+            age = (today - leave.created_at.date()).days
+            if age < 2:
+                continue
+            recipients = await leave_approver_recipients(session, org_id, leave.employee_id)
+            stage = f"pending-week-{age // 7}"
+            message = f"Leave request for {leave.start_date} to {leave.end_date} is still awaiting approval. Review the pending leave requests."
+        elif leave.status == "APPROVED" and today <= leave.start_date <= today + timedelta(days=7):
+            recipients = await employee_recipients(session, org_id, leave.employee_id)
+            recipients |= await supervisor_recipients(session, org_id, leave.employee_id)
+            stage = expiry_stage(leave.start_date, today)
+            message = f"Approved leave starts on {leave.start_date} and ends on {leave.end_date}. Please prepare the handover."
+        else:
+            continue
+        total += await emit_event(session, org_id, recipients, f"leave-reminder:{leave.id}:{leave.start_date}:{stage}", message, "WORKFORCE", "LEAVE_REMINDER")
+    records = (await session.scalars(select(EmployeeTrainingRecord).where(
+        EmployeeTrainingRecord.organization_id == org_id,
+        EmployeeTrainingRecord.is_active.is_(True), EmployeeTrainingRecord.archived_at.is_(None),
+        EmployeeTrainingRecord.status.in_(["PLANNED", "IN_PROGRESS", "COMPLETED", "EXPIRED"])))).all()
+    for training in records:
+        recipients = await employee_recipients(session, org_id, training.employee_id)
+        if training.status in {"PLANNED", "IN_PROGRESS"}:
+            total += await notify_training(session, training)
+            if training.start_date and today <= training.start_date <= today + timedelta(days=7):
+                stage = expiry_stage(training.start_date, today)
+                total += await emit_event(session, org_id, recipients,
+                    f"training-due:{training.id}:{training.start_date}:{stage}",
+                    f"Reminder: '{training.training_name}' starts on {training.start_date}. Provider: {training.provider or 'to be confirmed'}.",
+                    "WORKFORCE", "TRAINING_DUE")
+        elif training.expiry_date:
+            stage = expiry_stage(training.expiry_date, today)
+            if stage:
+                recipients |= await supervisor_recipients(session, org_id, training.employee_id)
+                total += await emit_event(session, org_id, recipients,
+                    f"training-expiry:{training.id}:{training.expiry_date}:{stage}",
+                    f"Training certificate '{training.training_name}' expires on {training.expiry_date}. Arrange renewal or recertification.",
+                    "WORKFORCE", "TRAINING_EXPIRY")
     return total

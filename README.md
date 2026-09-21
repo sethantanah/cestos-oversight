@@ -82,10 +82,8 @@ uv run uvicorn app.main:create_app --factory --reload --no-access-log --no-proxy
 ```
 
 Development API docs: [Swagger UI](http://localhost:8000/docs).
-Development test interface: [Cestos workspace](http://localhost:8000/test-ui/). The plain HTML/CSS/JS
-in `frontend/` lets you check health, sign in, refresh/logout, list/create/look up users and inspect
-redacted API responses. See [frontend guide](frontend/README.md) for testing flows. No build step is
-required; this interface is disabled in production.
+The frontend is maintained in the separate Cestos frontend project. Production uses
+https://cestos.qoteport.workers.dev; this API does not serve a bundled test interface.
 The explicit event-loop factory supports async psycopg on Windows without deprecated loop policies.
 Health: [liveness](http://localhost:8000/health) and [database readiness](http://localhost:8000/health/db).
 Database readiness returns 503 when the connection fails. OpenAPI and Swagger UI are disabled when

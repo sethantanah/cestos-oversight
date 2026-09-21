@@ -1230,3 +1230,20 @@ async def reject_leave_request(
         request,
     )
     return leave
+
+
+@training_global_router.get("/records")
+async def training_records(
+    actor: User = Depends(require_permission("employees.training.read")),
+    session: AsyncSession = Depends(get_session),
+):
+    from sqlalchemy import select
+    from app.models.employee import Employee, EmployeeTrainingRecord
+    result = await session.execute(select(EmployeeTrainingRecord, Employee.first_name, Employee.last_name)
+        .join(Employee, Employee.id == EmployeeTrainingRecord.employee_id)
+        .where(EmployeeTrainingRecord.organization_id == actor.organization_id,
+            Employee.organization_id == actor.organization_id, EmployeeTrainingRecord.is_active.is_(True),
+            EmployeeTrainingRecord.archived_at.is_(None), Employee.archived_at.is_(None))
+        .order_by(EmployeeTrainingRecord.created_at.desc()).limit(500))
+    return [{**EmployeeTrainingRead.model_validate(record).model_dump(),
+        "employee_name": f"{first} {last}".strip()} for record, first, last in result]

@@ -127,13 +127,7 @@ async def deliver_one(session: AsyncSession, settings: Settings) -> bool:
             token_hash=token_hash(raw),
             expires_at=now + timedelta(hours=24),
         )
-        base_url = settings.public_base_url.rstrip('/')
-        if '#reset=' in base_url or '?reset=' in base_url:
-            reset_url = f"{base_url}{raw}"
-        elif base_url.endswith('/sign-up-login') or base_url.endswith('/test-ui'):
-            reset_url = f"{base_url}/#reset={raw}"
-        else:
-            reset_url = f"{base_url}/sign-up-login#reset={raw}"
+        reset_url = f"{settings.public_base_url.rstrip('/')}/sign-up-login#reset={raw}"
 
         body += (
             f"\n\nReset link issued: {issued_at}.\n"
@@ -179,17 +173,21 @@ async def scheduler_tick(app: FastAPI) -> None:
     from app.services.field_notifications import generate_field_alerts
     from app.services.notification_schedules import run_due_schedules
 
-    # Separate transactions and failure boundaries keep a broken rule from starving mail.
-    for generator in (generate_alerts, generate_field_alerts):
+    # Independent sessions and bounded runs prevent a slow rule from starving the outbox.
+    async def generate(generator):
         try:
             async with app.state.session_factory() as session:
-                await generator(session)
+                await asyncio.wait_for(generator(session), timeout=30)
         except Exception:
-            structlog.get_logger().exception("alert_generation_failed", generator=generator.__name__)
-    try:
-        await run_due_schedules(app.state.session_factory)
-    except Exception:
-        structlog.get_logger().exception("notification_schedules_failed")
+            structlog.get_logger().exception("alert_generation_failed", generator=getattr(generator, "__name__", type(generator).__name__))
+
+    async def saved_schedules():
+        try:
+            await asyncio.wait_for(run_due_schedules(app.state.session_factory), timeout=30)
+        except Exception:
+            structlog.get_logger().exception("notification_schedules_failed")
+
+    await asyncio.gather(generate(generate_alerts), generate(generate_field_alerts), saved_schedules())
     for _ in range(20):
         try:
             async with app.state.session_factory() as session:
