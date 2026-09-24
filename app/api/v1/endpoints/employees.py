@@ -148,7 +148,7 @@ async def employee_document_reader(
 @router.get("", response_model=Page[EmployeeRead])
 async def list_employees(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=200),
     search: str | None = None,
     department: str | None = None,
     department_id: uuid.UUID | None = None,
@@ -587,10 +587,25 @@ async def archive_emergency_contact(
     return await EmergencyContactService(session, actor).archive(contact_id, request)
 
 
+def resume_access(permission):
+    async def check(employee_id: uuid.UUID,
+        actor: User = Depends(get_current_active_user),
+        session: AsyncSession = Depends(get_session)):
+        from sqlalchemy import select
+        from app.models import Employee
+        own = await session.scalar(select(Employee.id).where(Employee.id == employee_id,
+            Employee.organization_id == actor.organization_id, Employee.user_id == actor.id,
+            Employee.is_active.is_(True), Employee.archived_at.is_(None)))
+        if own:
+            return actor
+        return await require_permission(permission)(actor, session)
+    return check
+
+
 @router.get("/{employee_id}/resumes", response_model=list[EmployeeResumeRead])
 async def list_resumes(
     employee_id: uuid.UUID,
-    actor: User = Depends(require_permission("employees.resume.read")),
+    actor: User = Depends(resume_access("employees.resume.read")),
     session: AsyncSession = Depends(get_session),
 ) -> Sequence[EmployeeResumeRead]:
     return await ResumeService(session, actor).list(employee_id)
@@ -599,7 +614,7 @@ async def list_resumes(
 @router.get("/{employee_id}/resume/current", response_model=EmployeeResumeRead)
 async def current_resume(
     employee_id: uuid.UUID,
-    actor: User = Depends(require_permission("employees.resume.read")),
+    actor: User = Depends(resume_access("employees.resume.read")),
     session: AsyncSession = Depends(get_session),
 ) -> EmployeeResumeRead:
     return await ResumeService(session, actor).current(employee_id)
@@ -610,7 +625,7 @@ async def add_resume(
     employee_id: uuid.UUID,
     body: EmployeeResumeCreate,
     request: Request,
-    actor: User = Depends(require_permission("employees.resume.manage")),
+    actor: User = Depends(resume_access("employees.resume.manage")),
     session: AsyncSession = Depends(get_session),
 ) -> EmployeeResumeRead:
     return await ResumeService(session, actor).add(
@@ -625,11 +640,11 @@ async def upload_resume(
     file: UploadFile = File(...),
     title: str | None = Form(None),
     notes: str | None = Form(None),
-    actor: User = Depends(require_permission("employees.resume.manage")),
+    actor: User = Depends(resume_access("employees.resume.manage")),
     session: AsyncSession = Depends(get_session),
     storage: LocalStorage = Depends(request_storage),
 ) -> EmployeeResumeRead:
-    data = await file.read()
+    data = await file.read(storage.max_bytes + 1)
     body = EmployeeResumeCreate(
         title=title or file.filename or "Resume",
         file_url="upload",
@@ -647,7 +662,7 @@ async def upload_resume(
 async def download_resume(
     employee_id: uuid.UUID,
     resume_id: uuid.UUID,
-    actor: User = Depends(require_permission("employees.resume.read")),
+    actor: User = Depends(resume_access("employees.resume.read")),
     session: AsyncSession = Depends(get_session),
     storage: LocalStorage = Depends(request_storage),
 ) -> FileResponse:

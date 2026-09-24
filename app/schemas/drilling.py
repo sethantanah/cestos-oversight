@@ -74,11 +74,14 @@ class DrillingProgramResponse(BaseModel):
 
 # --- Drill Hole Schemas ---
 class DrillHoleCreate(BaseModel):
+    site_location_id: uuid.UUID | None = None
     project_id: uuid.UUID
     program_id: uuid.UUID | None = None
     hole_number: str = Field(..., min_length=1, max_length=100)
     drilling_method: str | None = Field(None, max_length=100)
     target_depth_m: Decimal | None = Field(None, ge=0)
+    from_depth_m: Decimal | None = Field(None, ge=0)
+    to_depth_m: Decimal | None = Field(None, ge=0)
     azimuth_deg: Decimal | None = Field(None, ge=0, le=360)
     dip_deg: Decimal | None = Field(None, ge=-90, le=90)
     notes: str | None = None
@@ -89,14 +92,19 @@ class DrillHoleCreate(BaseModel):
         if isinstance(data, dict):
             if "drilling_method" not in data and "drilling_type" in data:
                 data["drilling_method"] = data["drilling_type"]
+            if data.get("from_depth_m") is not None and data.get("to_depth_m") is not None:
+                data["target_depth_m"] = Decimal(str(data["to_depth_m"])) - Decimal(str(data["from_depth_m"]))
         return data
 
 
 class DrillHoleUpdate(BaseModel):
+    site_location_id: uuid.UUID | None = None
     hole_number: str | None = Field(None, min_length=1, max_length=100)
     program_id: uuid.UUID | None = None
     drilling_method: str | None = Field(None, max_length=100)
     target_depth_m: Decimal | None = Field(None, ge=0)
+    from_depth_m: Decimal | None = Field(None, ge=0)
+    to_depth_m: Decimal | None = Field(None, ge=0)
     final_depth_m: Decimal | None = Field(None, ge=0)
     azimuth_deg: Decimal | None = Field(None, ge=0, le=360)
     dip_deg: Decimal | None = Field(None, ge=-90, le=90)
@@ -105,8 +113,16 @@ class DrillHoleUpdate(BaseModel):
     completed_at: datetime | None = None
     notes: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def calculate_target_depth(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("from_depth_m") is not None and data.get("to_depth_m") is not None:
+            data["target_depth_m"] = Decimal(str(data["to_depth_m"])) - Decimal(str(data["from_depth_m"]))
+        return data
+
 
 class DrillHoleResponse(BaseModel):
+    site_location_id: uuid.UUID | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -188,6 +204,7 @@ class DrillingShiftCrewResponse(BaseModel):
 
 # --- Drilling Shift Report Schemas ---
 class DrillingShiftReportCreate(BaseModel):
+    site_location_id: uuid.UUID | None = None
     project_id: uuid.UUID
     rig_id: uuid.UUID
     program_id: uuid.UUID | None = None
@@ -210,6 +227,7 @@ class DrillingShiftReportCreate(BaseModel):
 
 
 class DrillingShiftReportUpdate(BaseModel):
+    site_location_id: uuid.UUID | None = None
     project_id: uuid.UUID | None = None
     rig_id: uuid.UUID | None = None
     program_id: uuid.UUID | None = None
@@ -245,6 +263,7 @@ class DrillingShiftReportUpdate(BaseModel):
 
 
 class DrillingShiftReportResponse(BaseModel):
+    site_location_id: uuid.UUID | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID

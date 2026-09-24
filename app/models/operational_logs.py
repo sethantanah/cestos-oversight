@@ -1,14 +1,14 @@
 """Asset operating logs and project collaboration records."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.db.mixins import ActorMixin, OrganizationMixin, TimestampMixin, UUIDMixin
+from app.db.mixins import ArchiveMixin, ActorMixin, OrganizationMixin, TimestampMixin, UUIDMixin
 
 
 class AssetFuelLog(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):
@@ -28,6 +28,142 @@ class AssetFuelLog(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Bas
     supplier: Mapped[str | None] = mapped_column(String(200))
     reference_number: Mapped[str | None] = mapped_column(String(100))
     notes: Mapped[str | None] = mapped_column(Text)
+
+
+class FuelDelivery(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):
+    __tablename__ = "fuel_deliveries"
+    __table_args__ = (CheckConstraint("quantity_litres > 0", name="fuel_delivery_positive"),)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
+    site_location_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("locations.id"))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    fuel_type: Mapped[str] = mapped_column(String(30))
+    quantity_litres: Mapped[Decimal] = mapped_column(Numeric(18, 3))
+    supplier: Mapped[str | None] = mapped_column(String(200))
+    reference_number: Mapped[str | None] = mapped_column(String(100))
+    notes: Mapped[str | None] = mapped_column(Text)
+    receipt_path: Mapped[str | None] = mapped_column(Text)
+    receipt_file_name: Mapped[str | None] = mapped_column(String(255))
+    receipt_mime_type: Mapped[str | None] = mapped_column(String(150))
+    receipt_size_bytes: Mapped[int | None]
+
+
+class FuelAllocation(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):
+    __tablename__ = "fuel_allocations"
+    __table_args__ = (CheckConstraint("quantity_litres > 0", name="fuel_allocation_positive"),)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
+    site_location_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("locations.id"))
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id"))
+    delivery_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("fuel_deliveries.id"))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    quantity_litres: Mapped[Decimal] = mapped_column(Numeric(18, 3))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class PMTemplate(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):
+    __tablename__ = "pm_templates"
+    name: Mapped[str] = mapped_column(String(200))
+    equipment_type: Mapped[str | None] = mapped_column(String(100))
+    pm_interval: Mapped[str] = mapped_column(String(100))
+    inspection_items: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    is_active: Mapped[bool] = mapped_column(default=True, server_default="true")
+
+
+class PMJobCard(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):
+    __tablename__ = "pm_job_cards"
+    # Keep inserts working against databases where an earlier PM migration did
+    # not install the timestamp defaults yet; the follow-up migration repairs
+    # the database defaults for non-ORM inserts as well.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now(), onupdate=lambda: datetime.now(timezone.utc))
+    job_card_number: Mapped[str] = mapped_column(String(50), unique=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"))
+    site_location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("locations.id"))
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    work_order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("maintenance_work_orders.id"), index=True)
+    template_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("pm_templates.id"))
+    status: Mapped[str] = mapped_column(String(30), default="DRAFT")
+    pm_control: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    inspection_items: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    service_defect_control: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    machine_release: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    technicians: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    signatures: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    supervisor_comments: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BreakdownJobCard(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):
+    __tablename__ = "breakdown_job_cards"
+    job_card_number: Mapped[str] = mapped_column(String(50), unique=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"))
+    site_location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("locations.id"))
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id"))
+    work_order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("maintenance_work_orders.id"), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="DRAFT")
+    job_control: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    reported_failure: Mapped[str | None] = mapped_column(Text)
+    corrective_action: Mapped[str | None] = mapped_column(Text)
+    parts_materials: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    labour_downtime: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    test_release: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    signatures: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+
+
+class OperationalPayee(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):
+    __tablename__ = "operational_payees"
+    name: Mapped[str] = mapped_column(String(200))
+    phone: Mapped[str | None] = mapped_column(String(50))
+    bank_account_details: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(default=True, server_default="true")
+
+
+class OperationalExpense(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):
+    __tablename__ = "operational_expenses"
+    expense_number: Mapped[str] = mapped_column(String(50), unique=True)
+    submitted_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    purchase_order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("purchase_orders.id", ondelete="SET NULL"), index=True)
+    payee_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("operational_payees.id"))
+    pay_to_name: Mapped[str] = mapped_column(String(200))
+    pay_to_phone: Mapped[str | None] = mapped_column(String(50))
+    bank_account_details: Mapped[str | None] = mapped_column(Text)
+    expense_date: Mapped[date] = mapped_column()
+    payment_method: Mapped[str] = mapped_column(String(40))
+    items: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    total_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    status: Mapped[str] = mapped_column(String(30), default="SUBMITTED", index=True)
+    invoice_path: Mapped[str | None] = mapped_column(Text)
+    invoice_name: Mapped[str | None] = mapped_column(String(255))
+    invoice_mime_type: Mapped[str | None] = mapped_column(String(150))
+    invoice_size_bytes: Mapped[int | None]
+    receipt_path: Mapped[str | None] = mapped_column(Text)
+    receipt_name: Mapped[str | None] = mapped_column(String(255))
+    receipt_mime_type: Mapped[str | None] = mapped_column(String(150))
+    receipt_size_bytes: Mapped[int | None]
+    paid_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    extraction_status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    extracted_data: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+
+
+class OperationalExpensePayment(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):
+    """A single finance disbursement against an operational expense."""
+    __tablename__ = "operational_expense_payments"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="operational_expense_payment_positive"),
+        Index("ix_operational_expense_payment_expense", "organization_id", "expense_id", "payment_date"),
+    )
+    expense_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("operational_expenses.id", ondelete="CASCADE"), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    payment_date: Mapped[date] = mapped_column()
+    receipt_path: Mapped[str] = mapped_column(Text)
+    receipt_name: Mapped[str] = mapped_column(String(255))
+    receipt_mime_type: Mapped[str | None] = mapped_column(String(150))
+    receipt_size_bytes: Mapped[int | None]
+    paid_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    reference: Mapped[str | None] = mapped_column(String(120))
+    notes: Mapped[str | None] = mapped_column(Text)
+
 
 
 class AssetMaintenanceJob(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin, Base):

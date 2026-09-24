@@ -176,7 +176,7 @@ class HseIncidentCreate(BaseModel):
     project_id: uuid.UUID
     site_location_id: uuid.UUID | None = None
     asset_id: uuid.UUID | None = None
-    reported_by_id: uuid.UUID
+    reported_by_id: uuid.UUID | None = None
     description: str = Field(..., min_length=1)
     immediate_actions_taken: str | None = None
     root_cause_analysis: str | None = None

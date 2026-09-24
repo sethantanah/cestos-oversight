@@ -130,6 +130,7 @@ async def emit_event(
     priority: str = "IMPORTANT",
     delivery_method: str = "BOTH",
     schedule_id: uuid.UUID | None = None,
+    action_url: str | dict[str, str] | None = None,
 ) -> int:
     """Stable primary keys deduplicate concurrent retries, even after read/resolution.
 
@@ -138,19 +139,20 @@ async def emit_event(
     if not recipients:
         return 0
     user = User.__table__
-    eligible = (
-        await session.scalars(
-            select(user.c.id).where(
-                user.c.id.in_(recipients),
-                user.c.organization_id == organization_id,
-                user.c.is_active.is_(True),
-                user.c.archived_at.is_(None),
-            )
+    eligible = (await session.scalars(
+        select(User).where(
+            user.c.id.in_(recipients),
+            user.c.organization_id == organization_id,
+            user.c.is_active.is_(True),
+            user.c.archived_at.is_(None),
         )
-    ).all()
+    )).all()
     insert = sqlite_insert if session.get_bind().dialect.name == "sqlite" else pg_insert
     count = 0
-    for recipient_id in eligible:
+    for recipient in eligible:
+        recipient_id = recipient.id
+        portal = "FIELD" if recipient.is_field_portal_only else str(recipient.portal_type or "FULL").upper()
+        recipient_action_url = action_url.get(portal, action_url.get("default")) if isinstance(action_url, dict) else action_url
         notification_id = uuid.uuid5(organization_id, f"{event_key}:{recipient_id}")
         created = await session.scalar(
             insert(Notification)
@@ -159,6 +161,7 @@ async def emit_event(
                 organization_id=organization_id,
                 recipient_id=recipient_id,
                 message=message[:1000],
+                action_url=recipient_action_url,
                 domain=domain,
                 priority_tag=priority,
                 delivery_method=delivery_method,
@@ -179,6 +182,7 @@ async def emit_event(
                     recipient_id=recipient_id,
                     kind=kind,
                     message=message[:1000],
+                    action_url=recipient_action_url,
                     next_attempt_at=datetime.now(UTC),
                 )
                 .on_conflict_do_nothing(index_elements=["id"])

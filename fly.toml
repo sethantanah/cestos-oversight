@@ -8,6 +8,9 @@ primary_region = 'lhr'
 
 [build]
 
+[deploy]
+  release_command = "/srv/cestos/.venv/bin/python /srv/cestos/scripts/migrate.py"
+
 [env]
   APP_ENV = 'production'
   PUBLIC_BASE_URL = 'https://cestos.qoteport.workers.dev'

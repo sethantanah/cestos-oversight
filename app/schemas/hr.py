@@ -1,6 +1,7 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, SecretStr, model_validator
@@ -81,8 +82,9 @@ class SelfEmergencyContact(BaseModel):
 
 class NotificationScheduleCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
-    domain: Literal["PROJECTS", "WORKFORCE", "EQUIPMENT", "INVENTORY"] = "INVENTORY"
+    domain: Literal["PROJECTS", "WORKFORCE", "EQUIPMENT", "INVENTORY", "FINANCE", "HSE"] = "INVENTORY"
     rule_type: str = Field(min_length=1, max_length=100)
+    criteria: dict[str, Any] = Field(default_factory=dict)
     lead_time_days: int = Field(default=14, ge=0, le=365)
     frequency: Literal["ONCE", "DAILY", "EVERY_OTHER_DAY", "WEEKLY", "BIWEEKLY", "MONTHLY"] = "DAILY"
     priority_tag: Literal["NORMAL", "IMPORTANT", "CRITICAL"] = "IMPORTANT"
@@ -94,8 +96,9 @@ class NotificationScheduleCreate(BaseModel):
 
 class NotificationScheduleUpdate(BaseModel):
     title: str | None = None
-    domain: Literal["PROJECTS", "WORKFORCE", "EQUIPMENT", "INVENTORY"] | None = None
+    domain: Literal["PROJECTS", "WORKFORCE", "EQUIPMENT", "INVENTORY", "FINANCE", "HSE"] | None = None
     rule_type: str | None = None
+    criteria: dict[str, Any] | None = None
     lead_time_days: int | None = None
     frequency: Literal["ONCE", "DAILY", "EVERY_OTHER_DAY", "WEEKLY", "BIWEEKLY", "MONTHLY"] | None = None
     priority_tag: Literal["NORMAL", "IMPORTANT", "CRITICAL"] | None = None
@@ -113,3 +116,31 @@ class NotificationForwardRequest(BaseModel):
     target_user_id: uuid.UUID | None = None
     target_user_ids: list[uuid.UUID] | None = None
     notes: str | None = Field(default=None, max_length=1000)
+
+
+class DocumentDownloadRequestCreate(BaseModel):
+    document_id: uuid.UUID
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class DocumentDownloadRequestReview(BaseModel):
+    status: Literal["APPROVED", "REJECTED"]
+    review_notes: str | None = Field(default=None, max_length=500)
+
+
+class DocumentDownloadRequestRead(ORMModel):
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    document_id: uuid.UUID
+    requested_by_id: uuid.UUID
+    status: str
+    reason: str | None = None
+    reviewed_by_id: uuid.UUID | None = None
+    reviewed_at: datetime | None = None
+    review_notes: str | None = None
+    download_token: str | None = None
+    expires_at: datetime | None = None
+    created_at: datetime
+    employee_name: str | None = None
+    document_title: str | None = None
+    requested_by_name: str | None = None

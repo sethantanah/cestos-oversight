@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -59,6 +60,27 @@ async def get_work_order(
     )
     if not wo:
         raise HTTPException(status_code=404, detail=f"Work order {wo_id} not found.")
+    return MaintenanceWorkOrderResponse.model_validate(wo)
+
+
+@router.patch("/work-orders/{wo_id}", response_model=MaintenanceWorkOrderResponse)
+async def update_work_order(
+    wo_id: uuid.UUID,
+    payload: MaintenanceWorkOrderUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> MaintenanceWorkOrderResponse:
+    wo = await maintenance_service.get_work_order(session, current_user.organization_id, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail=f"Work order {wo_id} not found.")
+    if wo.created_at < datetime.now(timezone.utc) - timedelta(days=10):
+        raise HTTPException(status_code=409, detail="Work orders can only be edited within 10 days of creation.")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(wo, key, value)
+    wo.updated_by_id = current_user.id
+    wo.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    wo = await maintenance_service.get_work_order(session, current_user.organization_id, wo_id)
     return MaintenanceWorkOrderResponse.model_validate(wo)
 
 

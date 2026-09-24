@@ -14,6 +14,30 @@ field_db = field_fixture
 FRONTEND = "https://cestos.qoteport.workers.dev"
 
 
+@pytest.mark.parametrize(("portal_type", "field_only", "expected"), [
+    ("FIELD", False, "/field-portal/notifications"),
+    ("FULL", True, "/field-portal/notifications"),
+    ("FIELD_ADMIN", False, "/field-admin-portal?tab=NOTIFICATIONS"),
+    ("HR", False, "/hr-portal?tab=NOTIFICATIONS"),
+    ("FINANCE", False, "/finance-portal?tab=NOTIFICATIONS"),
+    ("EXECUTIVE", False, "/executive-portal?tab=NOTIFICATIONS"),
+    ("FULL", False, "/workspace/hr/notifications"),
+])
+def test_notification_email_destination_matches_portal(portal_type, field_only, expected):
+    user = SimpleNamespace(portal_type=portal_type, is_field_portal_only=field_only)
+    assert mail.notification_portal_path(user) == expected
+
+
+def test_notification_email_uses_square_blue_white_red_template_and_escapes_body():
+    _, body = mail.build_html_email(
+        kind="ALERT", body_text="<script>alert('x')</script>", user_name="Test User",
+        portal_url=FRONTEND + "/hr-portal?tab=NOTIFICATIONS",
+    )
+    assert "border-radius:" not in body or "border-radius:0" in body
+    assert "#165DAB" in body and "#D62828" in body and "#ffffff" in body
+    assert "<script>" not in body and "&lt;script&gt;" in body
+
+
 def settings(url):
     return Settings(_env_file=None, database_url="postgresql+psycopg://test:test@localhost/test",
         jwt_secret_key="x" * 40, public_base_url=url)

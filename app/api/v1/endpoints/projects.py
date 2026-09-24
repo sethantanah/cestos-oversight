@@ -20,6 +20,73 @@ from app.services.projects import ProjectService
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+@router.get("/field-admin-metrics")
+async def field_admin_project_metrics(
+    actor: User = Depends(require_permission("projects.read")),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """Return project counts from current assignment records for the Field Admin cards."""
+    from datetime import UTC, datetime
+    from sqlalchemy import func, or_, select
+    from app.models import Asset, AssetAssignment, EmployeeAssignment, Project
+    from app.models.employee import AssignmentStatus
+    from app.models.maintenance_hse import MaintenanceWorkOrder, WorkOrderStatus
+
+    now = datetime.now(UTC)
+    today = date.today()
+    assigned_asset_ids = select(AssetAssignment.asset_id).join(
+        Asset, Asset.id == AssetAssignment.asset_id
+    ).where(
+        AssetAssignment.organization_id == actor.organization_id,
+        AssetAssignment.project_id == Project.id,
+        AssetAssignment.status == "ACTIVE",
+        AssetAssignment.assigned_at <= now,
+        or_(AssetAssignment.returned_at.is_(None), AssetAssignment.returned_at > now),
+        Asset.organization_id == actor.organization_id,
+        Asset.is_active.is_(True),
+        Asset.archived_at.is_(None),
+    ).correlate(Project)
+    asset_count = select(func.count(func.distinct(AssetAssignment.asset_id))).join(
+        Asset, Asset.id == AssetAssignment.asset_id
+    ).where(
+        AssetAssignment.organization_id == actor.organization_id,
+        AssetAssignment.project_id == Project.id,
+        AssetAssignment.status == "ACTIVE",
+        AssetAssignment.assigned_at <= now,
+        or_(AssetAssignment.returned_at.is_(None), AssetAssignment.returned_at > now),
+        Asset.organization_id == actor.organization_id,
+        Asset.is_active.is_(True),
+        Asset.archived_at.is_(None),
+    ).correlate(Project).scalar_subquery()
+    crew_count = select(func.count(func.distinct(EmployeeAssignment.employee_id))).where(
+        EmployeeAssignment.organization_id == actor.organization_id,
+        EmployeeAssignment.project_id == Project.id,
+        EmployeeAssignment.status == AssignmentStatus.ACTIVE,
+        EmployeeAssignment.start_date <= today,
+        or_(EmployeeAssignment.end_date.is_(None), EmployeeAssignment.end_date >= today),
+    ).correlate(Project).scalar_subquery()
+    open_work_order_count = select(func.count(func.distinct(MaintenanceWorkOrder.id))).where(
+        MaintenanceWorkOrder.organization_id == actor.organization_id,
+        MaintenanceWorkOrder.is_active.is_(True),
+        MaintenanceWorkOrder.archived_at.is_(None),
+        MaintenanceWorkOrder.status.notin_([WorkOrderStatus.COMPLETED, WorkOrderStatus.CANCELLED]),
+        or_(
+            MaintenanceWorkOrder.project_id == Project.id,
+            MaintenanceWorkOrder.asset_id.in_(assigned_asset_ids),
+        ),
+    ).correlate(Project).scalar_subquery()
+    rows = await session.execute(select(
+        Project.id.label("project_id"),
+        asset_count.label("asset_count"),
+        crew_count.label("crew_count"),
+        open_work_order_count.label("open_work_order_count"),
+    ).where(
+        Project.organization_id == actor.organization_id,
+        Project.archived_at.is_(None),
+    ))
+    return [dict(row) for row in rows.mappings()]
+
+
 @router.get("", response_model=Page[ProjectRead])
 async def list_projects(
     page: int = Query(1, ge=1),

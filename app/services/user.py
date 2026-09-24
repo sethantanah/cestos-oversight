@@ -45,6 +45,7 @@ class UserService:
         # Authentication already opened the request transaction. This use case owns its commit.
         try:
             email_clean = str(body.email).lower().strip()
+            portal_type = body.portal_type or ("FIELD" if body.is_field_portal_only else "FULL")
             user = User(
                 organization_id=self.actor.organization_id,
                 email=email_clean,
@@ -53,7 +54,8 @@ class UserService:
                 ),
                 first_name=body.first_name,
                 last_name=body.last_name,
-                is_field_portal_only=body.is_field_portal_only,
+                portal_type=portal_type,
+                is_field_portal_only=(portal_type == "FIELD"),
                 setup_required=True,
             )
             self.session.add(user)
@@ -290,6 +292,13 @@ class UserService:
             user.is_superuser = body.is_superuser
         if body.is_field_portal_only is not None:
             user.is_field_portal_only = body.is_field_portal_only
+            # Sync portal_type for backward compat
+            if body.is_field_portal_only and user.portal_type == "FULL":
+                user.portal_type = "FIELD"
+        if body.portal_type is not None:
+            user.portal_type = body.portal_type
+            # Keep legacy flag in sync
+            user.is_field_portal_only = (body.portal_type == "FIELD")
 
         if body.role_ids is not None:
             roles = (

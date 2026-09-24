@@ -5,6 +5,8 @@ from pydantic import BaseModel, EmailStr, Field, SecretStr, field_validator
 
 from app.schemas.common import ORMModel
 
+PORTAL_TYPES = ("FULL", "FIELD", "HR", "FINANCE", "FIELD_ADMIN", "EXECUTIVE")
+
 
 class PermissionRead(ORMModel):
     id: uuid.UUID
@@ -39,6 +41,7 @@ class UserRead(ORMModel):
     is_active: bool
     is_superuser: bool
     is_field_portal_only: bool = False
+    portal_type: str = "FULL"
     setup_required: bool = False
     last_login_at: datetime | None
     created_at: datetime
@@ -52,11 +55,19 @@ class UserCreate(BaseModel):
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)
     is_field_portal_only: bool = False
+    portal_type: str = "FULL"
 
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: str) -> str:
         return value.lower()
+
+    @field_validator("portal_type")
+    @classmethod
+    def validate_portal_type(cls, value: str) -> str:
+        if value not in PORTAL_TYPES:
+            raise ValueError(f"portal_type must be one of {PORTAL_TYPES}")
+        return value
 
 
 class UserUpdate(BaseModel):
@@ -65,5 +76,12 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
     is_superuser: bool | None = None
     is_field_portal_only: bool | None = None
+    portal_type: str | None = None
     role_ids: list[uuid.UUID] | None = None
 
+    @field_validator("portal_type")
+    @classmethod
+    def validate_portal_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in PORTAL_TYPES:
+            raise ValueError(f"portal_type must be one of {PORTAL_TYPES}")
+        return value

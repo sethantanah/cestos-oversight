@@ -20,6 +20,11 @@ class User(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Base):
     first_name: Mapped[str] = mapped_column(String(100))
     last_name: Mapped[str] = mapped_column(String(100))
     is_superuser: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # portal_type controls which portal the user is redirected to on login.
+    # FULL=main workspace, FIELD=field portal, HR=HR portal,
+    # FINANCE=finance portal, FIELD_ADMIN=field admin portal, EXECUTIVE=executive portal.
+    portal_type: Mapped[str] = mapped_column(String(20), default="FULL", server_default="FULL")
+    # Legacy field kept for backward compatibility — mirrors portal_type == "FIELD"
     is_field_portal_only: Mapped[bool] = mapped_column(default=False, server_default="false")
     token_version: Mapped[int] = mapped_column(default=0, server_default="0")
     setup_required: Mapped[bool] = mapped_column(default=False, server_default="false")

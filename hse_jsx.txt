@@ -1,0 +1,187 @@
+{/* HSE TAB */}
+            {activeTab === 'HSE' && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div>
+                    <h2 className="text-xl font-bold text-slate-900 dark:text-white">HSE Incidents &amp; Safety Analytics</h2>
+                    <p className="text-xs text-slate-500">Report &amp; track health, safety &amp; environmental incidents, hazards and near-miss trends</p>
+                  </div>
+                  <button
+                    onClick={() => setShowHseModal(true)}
+                    className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3.5 py-2 rounded-lg transition shadow-sm"
+                  >
+                    <Plus size={15} /> Log HSE Incident
+                  </button>
+                </div>
+
+                {/* HSE KPI Analytics Summary Cards */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+                  <div className="bg-white dark:bg-slate-900 border rounded-xl p-4 space-y-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Total Safety Incidents</span>
+                    <p className="text-xl font-black text-slate-900 dark:text-white">
+                      {filteredIncidents.length}
+                    </p>
+                    <span className="text-[11px] text-slate-500 font-medium">Logged in date range</span>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-900 border rounded-xl p-4 space-y-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Critical / High Severity</span>
+                    <p className="text-xl font-black text-red-600">
+                      {filteredIncidents.filter((i) => ['CRITICAL', 'HIGH'].includes(String(i.severity || '').toUpperCase())).length}
+                    </p>
+                    <span className="text-[11px] text-slate-500 font-medium">High-risk safety events</span>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-900 border rounded-xl p-4 space-y-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Near Misses &amp; Hazards</span>
+                    <p className="text-xl font-black text-amber-600">
+                      {filteredIncidents.filter((i) => ['NEAR_MISS', 'HAZARD_OBSERVATION', 'HAZARD'].includes(String(i.incident_type || '').toUpperCase())).length}
+                    </p>
+                    <span className="text-[11px] text-slate-500 font-medium">Proactive hazard logs</span>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-900 border rounded-xl p-4 space-y-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Environmental &amp; Property</span>
+                    <p className="text-xl font-black text-blue-600">
+                      {filteredIncidents.filter((i) => ['ENVIRONMENTAL_SPILL', 'PROPERTY_DAMAGE', 'ENVIRONMENTAL'].includes(String(i.incident_type || '').toUpperCase())).length}
+                    </p>
+                    <span className="text-[11px] text-slate-500 font-medium">Spill &amp; damage records</span>
+                  </div>
+                </div>
+
+                {/* HSE Visualizations Grid: Line Chart & Bar Chart */}
+                <div className="grid lg:grid-cols-2 gap-4">
+                  {/* HSE Daily Time Series Line Chart */}
+                  <div className="bg-white dark:bg-slate-900 rounded-xl border p-4 space-y-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                          <TrendingUp size={16} className="text-red-600" /> Daily HSE Incident &amp; Hazard Trend
+                        </h3>
+                        <p className="text-xs text-slate-500">Chronological daily breakdown of total safety incidents and high-severity events</p>
+                      </div>
+                    </div>
+
+                    {hseTimeSeriesData.length === 0 ? (
+                      <div className="h-48 flex items-center justify-center border border-dashed rounded-lg text-xs text-slate-500">
+                        No daily safety incident trend data available for the selected range.
+                      </div>
+                    ) : (
+                      <div className="h-60 w-full pt-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <ComposedChart data={hseTimeSeriesData} margin={{ top: 10, right: 20, left: -20, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+                            <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                            <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                            <Tooltip
+                              contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', borderRadius: '8px', border: 'none', color: '#fff', fontSize: '12px' }}
+                              formatter={(val: any, name: any) => [val, name]}
+                            />
+                            <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                            <Line type="monotone" dataKey="totalIncidents" name="Total Incidents" stroke="#ef4444" strokeWidth={2.5} dot={{ r: 4 }} />
+                            <Line type="monotone" dataKey="criticalCount" name="Critical / High" stroke="#b91c1c" strokeWidth={2.5} dot={{ r: 4 }} />
+                            <Line type="monotone" dataKey="nearMissCount" name="Near Misses / Hazards" stroke="#f59e0b" strokeWidth={2.5} dot={{ r: 4 }} />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* HSE Category Distribution Bar Chart */}
+                  <div className="bg-white dark:bg-slate-900 rounded-xl border p-4 space-y-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                          <ShieldCheck size={16} className="text-orange-600" /> Incident Distribution by Category
+                        </h3>
+                        <p className="text-xs text-slate-500">Breakdown of safety occurrences across categories</p>
+                      </div>
+                    </div>
+
+                    {filteredIncidents.length === 0 ? (
+                      <div className="h-48 flex items-center justify-center border border-dashed rounded-lg text-xs text-slate-500">
+                        No incident category distribution data available for the selected range.
+                      </div>
+                    ) : (
+                      <div className="h-60 w-full pt-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={hseCategoryBarData} margin={{ top: 10, right: 20, left: -20, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+                            <XAxis dataKey="category" tick={{ fontSize: 10 }} interval={0} angle={-15} textAnchor="end" height={45} />
+                            <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                            <Tooltip
+                              contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', borderRadius: '8px', border: 'none', color: '#fff', fontSize: '12px' }}
+                              formatter={(val: any) => [`${val} Record(s)`, 'Incidents']}
+                            />
+                            <Bar dataKey="count" name="Incidents Count" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* HSE Incident Log Table & Detailed Cards */}
+                <div className="bg-white dark:bg-slate-900 rounded-xl border p-4 space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-2 border-b pb-3">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                        <ShieldCheck className="text-red-600" size={16} /> Reported HSE Safety Incidents &amp; Hazards Log
+                      </h3>
+                      <p className="text-xs text-slate-500">Official log of safety events, near-misses, environmental spills, and corrective actions</p>
+                    </div>
+                  </div>
+
+                  {filteredIncidents.length === 0 ? (
+                    <p className="text-xs text-slate-500 py-12 text-center">No safety incidents reported for this site scope.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left border-collapse">
+                        <thead>
+                          <tr className="border-b bg-slate-50 dark:bg-slate-800/50 text-slate-500">
+                            <th className="p-2.5 font-bold">Date &amp; Time</th>
+                            <th className="p-2.5 font-bold">Title / Incident Summary</th>
+                            <th className="p-2.5 font-bold">Category</th>
+                            <th className="p-2.5 font-bold">Severity</th>
+                            <th className="p-2.5 font-bold">Location / Asset</th>
+                            <th className="p-2.5 text-right font-bold">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {filteredIncidents.map((inc: any) => (
+                            <tr key={inc.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                              <td className="p-2.5 font-medium whitespace-nowrap">
+                                {inc.incident_date ? new Date(inc.incident_date).toLocaleString() : inc.created_at?.slice(0, 10) || '—'}
+                              </td>
+                              <td className="p-2.5 font-bold text-slate-900 dark:text-white max-w-[220px] truncate">
+                                {inc.title || 'Safety Incident'}
+                              </td>
+                              <td className="p-2.5">
+                                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                                  {inc.incident_type || 'HAZARD'}
+                                </span>
+                              </td>
+                              <td className="p-2.5">
+                                <StatusBadge status={inc.severity || 'MEDIUM'} />
+                              </td>
+                              <td className="p-2.5 text-slate-600 dark:text-slate-400 max-w-[180px] truncate">
+                                {inc.location || projectSites.find((s) => String(s.id) === String(inc.site_location_id))?.name || 'Site Field Area'}
+                              </td>
+                              <td className="p-2.5 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => setViewingIncident(inc)}
+                                  className="px-2.5 py-1 bg-red-50 hover:bg-red-100 dark:bg-red-950/50 dark:hover:bg-red-900/60 text-red-700 dark:text-red-300 rounded font-semibold text-[11px] inline-flex items-center gap-1 transition"
+                                >
+                                  <FileText size={12} /> View Details
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}

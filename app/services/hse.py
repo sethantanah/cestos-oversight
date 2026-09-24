@@ -18,6 +18,7 @@ from app.schemas.maintenance_hse import (
     HseIncidentUpdate,
 )
 from app.services.counters import next_business_number
+from app.services.project_sites import require_site
 
 UTC = timezone.utc
 
@@ -28,6 +29,10 @@ async def create_incident(
     payload: HseIncidentCreate,
     actor_id: uuid.UUID | None = None,
 ) -> HseIncident:
+    if payload.site_location_id:
+        if not payload.project_id:
+            raise ValueError("A project is required when selecting a site")
+        await require_site(session, organization_id, payload.project_id, payload.site_location_id)
     inc_number = await next_business_number(session, organization_id, "hse_incident")
     incident = HseIncident(
         organization_id=organization_id,

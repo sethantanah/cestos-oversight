@@ -13,8 +13,11 @@ from app.models import Asset
 from app.models.employee import EmployeeDocument, EmployeeRotation
 from app.models.hr import EmailDelivery, Notification, NotificationSchedule
 from app.models.inventory import InventoryBalance, InventoryItem, InventoryLot
+from app.models.maintenance_hse import HseCorrectiveAction, HseIncident
+from app.models.operational_logs import OperationalExpense
 from app.services.notification_schedules import (
     evaluate,
+    emit_configured_event,
     matching_alerts,
     next_run,
     recipients,
@@ -36,6 +39,9 @@ def scheduled(request):
         InventoryItem,
         InventoryLot,
         InventoryBalance,
+        OperationalExpense,
+        HseIncident,
+        HseCorrectiveAction,
     ]:
         model.__table__.create(f.session.get_bind())
     schedule = NotificationSchedule(
@@ -154,7 +160,6 @@ async def test_delivery_channels(scheduled, method, email_count, inbox_count):
 async def test_all_supported_rules_execute_actual_sql(scheduled):
     f = scheduled
     from app.services.notification_schedules import RULES
-
     for rule, domain in RULES.items():
         f.schedule.rule_type = rule
         f.schedule.domain = domain
@@ -219,6 +224,30 @@ async def test_legacy_employee_picker_ids_resolve_to_linked_user(scheduled):
     assert f.session.scalar(select(Notification)).recipient_id == f.worker.id
 
 
+async def test_finance_threshold_events_deliver_only_above_threshold_and_deduplicate(scheduled):
+    f = scheduled
+    f.schedule.domain = "FINANCE"
+    f.schedule.rule_type = "FINANCE_OPERATIONAL_EXPENSE_THRESHOLD"
+    f.schedule.criteria = {"threshold_amount": 1000}
+    f.session.commit()
+
+    assert await emit_configured_event(
+        f.db, f.org.id, "FINANCE_OPERATIONAL_EXPENSE_THRESHOLD",
+        "expense:below", "Expense below threshold", amount="1000.00",
+    ) == 0
+    assert await emit_configured_event(
+        f.db, f.org.id, "FINANCE_OPERATIONAL_EXPENSE_THRESHOLD",
+        "expense:above", "Expense above threshold", amount="1000.01",
+    ) == 1
+    assert await emit_configured_event(
+        f.db, f.org.id, "FINANCE_OPERATIONAL_EXPENSE_THRESHOLD",
+        "expense:above", "Expense above threshold", amount="1000.01",
+    ) == 0
+    alert = f.session.scalar(select(Notification))
+    assert alert.schedule_id == f.schedule.id
+    assert "Expense above threshold" in alert.message
+
+
 def test_basic_read_cannot_schedule_workforce_alerts():
     from app.services.notification_schedules import allowed_domains
 
@@ -237,6 +266,23 @@ def test_basic_read_cannot_schedule_workforce_alerts():
     assert allowed_domains(actor) == set()
     actor.roles[0].permissions.append(SimpleNamespace(code="employees.alerts.manage"))
     assert allowed_domains(actor) == {"WORKFORCE"}
+
+
+def test_finance_and_hse_roles_can_manage_their_schedule_domains():
+    from app.services.notification_schedules import allowed_domains
+
+    actor = SimpleNamespace(
+        is_superuser=False,
+        organization_id="org",
+        roles=[
+            SimpleNamespace(name="Accountant", organization_id="org", is_system_role=False, permissions=[]),
+            SimpleNamespace(name="Safety Officer", organization_id="org", is_system_role=False, permissions=[]),
+        ],
+    )
+    assert allowed_domains(actor) == {"FINANCE", "HSE"}
+    actor.roles = []
+    actor.portal_type = "FINANCE"
+    assert allowed_domains(actor) == {"FINANCE"}
 
 
 async def test_update_notification_schedule_updates_fields_and_evaluates(scheduled):

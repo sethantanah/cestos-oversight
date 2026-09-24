@@ -1,6 +1,8 @@
 import pytest
 
 from app.models.operational_logs import FuelSupplier
+from app.models import User
+from app.tests.conftest import login
 from app.tests.test_operational import (
     make_client,
     make_employee,
@@ -37,10 +39,12 @@ async def test_procurement_purchase_order_lifecycle_and_receipts(client, identit
         json={
             "supplier_id": supplier_id,
             "project_id": project["id"],
+            "category": "MAINTENANCE_PARTS",
             "currency": "USD",
             "notes": "Urgent procurement of drilling spare parts",
             "items": [
                 {
+                    "item_name": "Drill Bit Blades",
                     "description": "7-1/4 Drill Bit Blades",
                     "quantity_ordered": 10.0,
                     "unit_price": 450.0,
@@ -57,11 +61,44 @@ async def test_procurement_purchase_order_lifecycle_and_receipts(client, identit
     assert po_res.status_code == 201, po_res.text
     po = po_res.json()
     assert po["po_number"].startswith("PO-")
-    assert po["status"] == "APPROVED"
+    assert po["status"] == "WAITING_APPROVAL"
+    assert po["category"] == "MAINTENANCE_PARTS"
     assert len(po["items"]) == 2
+    assert po["items"][0]["item_name"] == "Drill Bit Blades"
     assert float(po["total_amount"]) == 5100.0
 
     po_id = po["id"]
+    async with session_factory() as session:
+        executive = await session.get(User, identities["denied"].id)
+        executive.portal_type = "EXECUTIVE"
+        await session.commit()
+    executive_tokens = await login(client, identities["denied"])
+    executive_headers = {"Authorization": f"Bearer {executive_tokens['access_token']}"}
+    approval = await client.post(
+        f"/api/v1/procurement/purchase-orders/{po_id}/approve",
+        headers=executive_headers,
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["status"] == "APPROVED"
+
+    edit_res = await client.patch(
+        f"/api/v1/procurement/purchase-orders/{po_id}",
+        json={
+            "supplier_name": "Primary Fuel & Equipment Supplier",
+            "project_id": project["id"],
+            "category": "Site safety equipment",
+            "currency": "USD",
+            "notes": "Executive reviewed procurement",
+            "items": [
+                {"item_name": "Drill Bit Blades", "description": "7-1/4 Drill Bit Blades", "quantity_ordered": 10.0, "unit_price": 450.0},
+                {"description": "High Pressure Hydraulic Hose 20ft", "quantity_ordered": 5.0, "unit_price": 120.0},
+            ],
+        },
+        headers=executive_headers,
+    )
+    assert edit_res.status_code == 200, edit_res.text
+    po = edit_res.json()
+    assert po["category"] == "Site safety equipment"
     bit_item_id = po["items"][0]["id"]
     hose_item_id = po["items"][1]["id"]
 
@@ -78,6 +115,16 @@ async def test_procurement_purchase_order_lifecycle_and_receipts(client, identit
     assert recv_res.status_code == 200, recv_res.text
     partial_po = recv_res.json()
     assert partial_po["status"] == "PARTIALLY_RECEIVED"
+    locked_edit = await client.patch(
+        f"/api/v1/procurement/purchase-orders/{po_id}",
+        json={
+            "supplier_name": "Primary Fuel & Equipment Supplier",
+            "currency": "USD",
+            "items": [{"description": "Replacement", "quantity_ordered": 1, "unit_price": 1}],
+        },
+        headers=executive_headers,
+    )
+    assert locked_edit.status_code == 400
 
     # 3. Final Goods Receipt to complete
     recv2_res = await client.post(

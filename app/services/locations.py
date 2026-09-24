@@ -31,7 +31,11 @@ class LocationService:
         ).one_or_none()
         if location is None:
             raise NotFoundError("Location not found")
-        return LocationRead.model_validate(location)
+        result = LocationRead.model_validate(location)
+        if location.project_id:
+            result.project_name = await self.session.scalar(select(Project.name).where(
+                Project.id == location.project_id, Project.organization_id == self.actor.organization_id))
+        return result
 
     async def list(
         self,
@@ -66,7 +70,10 @@ class LocationService:
                 .limit(page_size)
             )
         ).all()
-        items = [LocationRead.model_validate(row) for row in rows]
+        projects = dict((await self.session.execute(select(Project.id, Project.name).where(
+            Project.organization_id == self.actor.organization_id,
+            Project.id.in_({row.project_id for row in rows if row.project_id})))).all())
+        items = [LocationRead.model_validate(row).model_copy(update={"project_name": projects.get(row.project_id)}) for row in rows]
         return Page(
             items=items,
             total=total or 0,

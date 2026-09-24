@@ -95,6 +95,7 @@ class NotificationService:
                 {
                     "id": r.id,
                     "message": r.message,
+                    "action_url": r.action_url,
                     "domain": r.domain,
                     "priority_tag": r.priority_tag,
                     "delivery_method": r.delivery_method,
@@ -215,6 +216,7 @@ class NotificationService:
                 organization_id=self.actor.organization_id,
                 recipient_id=target.id,
                 message=forward_msg,
+                action_url=orig.action_url,
                 domain=orig.domain,
                 priority_tag=orig.priority_tag,
                 delivery_method=orig.delivery_method,
@@ -233,6 +235,7 @@ class NotificationService:
                         recipient_id=target.id,
                         kind="FORWARDED_ALERT",
                         message=forward_msg,
+                        action_url=orig.action_url,
                         next_attempt_at=datetime.now(UTC),
                     )
                 )
@@ -275,6 +278,7 @@ class NotificationService:
             title=data.get("title") or "Automated Notification Schedule",
             domain=data.get("domain", "INVENTORY").upper(),
             rule_type=data.get("rule_type", "INVENTORY_CONSUMABLES_EXPIRY"),
+            criteria=data.get("criteria") or {},
             lead_time_days=int(data.get("lead_time_days", 14)),
             frequency=data.get("frequency", "DAILY").upper(),
             priority_tag=data.get("priority_tag", "IMPORTANT").upper(),
@@ -313,6 +317,8 @@ class NotificationService:
             if val is not None and hasattr(row, key):
                 if key == "recipient_user_ids":
                     setattr(row, key, [str(u) for u in val])
+                elif key == "criteria":
+                    setattr(row, key, dict(val or {}))
                 elif key in ("domain", "frequency", "priority_tag", "delivery_method"):
                     setattr(row, key, str(val).upper())
                 else:

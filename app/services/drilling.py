@@ -35,6 +35,7 @@ from app.schemas.drilling import (
     ProjectDrillingSummaryResponse,
 )
 from app.services.counters import next_business_number
+from app.services.project_sites import require_site, validate_site_intervals
 
 
 log = logging.getLogger(__name__)
@@ -188,6 +189,7 @@ async def create_drill_hole(
     payload: DrillHoleCreate,
     actor_id: uuid.UUID | None = None,
 ) -> DrillHole:
+    await require_site(session, organization_id, payload.project_id, payload.site_location_id)
     # Check duplicate hole number within project
     existing = await session.scalar(
         select(DrillHole).where(
@@ -203,6 +205,7 @@ async def create_drill_hole(
     hole = DrillHole(
         organization_id=organization_id,
         project_id=payload.project_id,
+        site_location_id=payload.site_location_id,
         program_id=payload.program_id,
         hole_number=payload.hole_number,
         drilling_method=payload.drilling_method,
@@ -261,7 +264,13 @@ async def update_drill_hole(
     if not hole:
         raise ValueError(f"Drill Hole {hole_id} not found.")
 
-    for field, val in payload.model_dump(exclude_unset=True).items():
+    if "site_location_id" in payload.model_fields_set:
+        await require_site(session, organization_id, hole.project_id, payload.site_location_id)
+        if payload.site_location_id != hole.site_location_id and await session.scalar(
+            select(DrillingShiftInterval.id).where(DrillingShiftInterval.drill_hole_id == hole.id).limit(1)):
+            raise ValueError("A hole with recorded shift intervals cannot be moved to another site")
+
+    for field, val in payload.model_dump(exclude_unset=True, exclude={"from_depth_m", "to_depth_m"}).items():
         setattr(hole, field, val)
 
     await session.commit()
@@ -398,6 +407,9 @@ async def create_shift_report(
             else:
                 raise ValueError("No active employee profile associated with your user account. Cannot verify project assignment.")
 
+    await validate_site_intervals(session, organization_id, payload.project_id,
+        payload.site_location_id, payload.intervals)
+
     # Check Rig existence
     rig = await session.scalar(
         select(Asset).where(Asset.id == payload.rig_id, Asset.organization_id == organization_id)
@@ -426,6 +438,7 @@ async def create_shift_report(
         organization_id=organization_id,
         report_number=report_num,
         project_id=payload.project_id,
+        site_location_id=payload.site_location_id,
         rig_id=payload.rig_id,
         program_id=payload.program_id,
         date=payload.date,
@@ -667,6 +680,10 @@ async def update_shift_report(
     if report.status == ShiftReportStatus.APPROVED and not payload.correction_reason:
         raise ValueError("Audited corrections to an APPROVED shift report require a correction_reason.")
 
+    site_id = payload.site_location_id if "site_location_id" in payload.model_fields_set else report.site_location_id
+    await validate_site_intervals(session, organization_id, payload.project_id or report.project_id,
+        site_id, payload.intervals if payload.intervals is not None else report.intervals, shift_id=report.id)
+    report.site_location_id = site_id
     if payload.project_id is not None:
         report.project_id = payload.project_id
     if payload.rig_id is not None:

@@ -35,6 +35,7 @@ class LocationUpdate(BaseModel):
 
 
 class LocationRead(ORMModel):
+    project_name: str | None = None
     id: uuid.UUID
     organization_id: uuid.UUID
     location_number: str

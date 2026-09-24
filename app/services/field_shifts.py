@@ -21,6 +21,7 @@ from app.services.field_work import is_supervisor
 
 class FieldShiftEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    site_location_id: uuid.UUID | None = None
     date: py_date | None = None
     shift_type: ShiftType | None = None
     rig_id: uuid.UUID | None = None
@@ -72,10 +73,13 @@ async def edit_shift(session, actor, shift_id, body):
         if permitted != ids:
             raise ValidationError("Select drill holes from this project")
     payload = DrillingShiftReportUpdate.model_validate(body.model_dump(exclude_unset=True))
-    return await drilling.update_shift_report(
-        session,
-        actor.organization_id,
-        shift_id,
-        payload,
-        actor_id=actor.id,
-    )
+    try:
+        return await drilling.update_shift_report(
+            session,
+            actor.organization_id,
+            shift_id,
+            payload,
+            actor_id=actor.id,
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc

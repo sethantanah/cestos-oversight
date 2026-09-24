@@ -147,7 +147,7 @@ __all__ = [
     "user_roles",
 ]
 
-from app.models.hr import ContractAlertRule, Notification, NotificationSchedule, PasswordSetup, Salary  # noqa: F401
+from app.models.hr import ContractAlertRule, DocumentDownloadRequest, Notification, NotificationSchedule, PasswordSetup, Salary  # noqa: F401
 
 from app.models import asset_records  # noqa: F401
 

@@ -22,6 +22,7 @@ MODEL_CACHE_ROOT = INDEX_ROOT / "models"
 MODEL_LOCK = threading.Lock()
 MAX_TEXT = 2_000_000
 MAX_PAGES = 300
+INDEX_TIMEOUT_SECONDS = float(os.getenv("DOCUMENT_INDEX_TIMEOUT_SECONDS", "120"))
 
 
 @lru_cache(maxsize=1)
@@ -251,7 +252,7 @@ async def index_one(session_factory, storage):
         path = await run_in_threadpool(storage.resolve, storage_path)
         result = await asyncio.wait_for(
             run_in_threadpool(build_index, path, file_name, doc_id, org_id),
-            timeout=15.0,
+            timeout=INDEX_TIMEOUT_SECONDS,
         )
     except Exception as error:
         from pypdf.errors import PdfReadError
@@ -260,7 +261,7 @@ async def index_one(session_factory, storage):
             "Text indexing failed. Retry after checking the file and local model availability."
         )
         if isinstance(error, TimeoutError | asyncio.TimeoutError):
-            message = "Text indexing timed out. Check file or model availability."
+            message = f"Text indexing timed out after {INDEX_TIMEOUT_SECONDS:g} seconds. Check file size or model availability."
         elif isinstance(error, PdfReadError):
             message = (
                 "This PDF is damaged or incomplete. Upload a valid PDF to extract its text."
@@ -274,7 +275,10 @@ async def index_one(session_factory, storage):
         import structlog
 
         structlog.get_logger().warning(
-            "document_index_failed", document_id=str(doc_id), error_type=type(error).__name__
+            "document_index_failed",
+            document_id=str(doc_id),
+            file_name=file_name,
+            error_type=type(error).__name__,
         )
 
     async with session_factory() as session:

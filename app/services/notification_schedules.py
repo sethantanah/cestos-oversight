@@ -3,6 +3,7 @@
 import calendar
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 
 import structlog
 from sqlalchemy import and_, func, or_, select
@@ -14,7 +15,8 @@ from app.models.employee import EmployeeDocument, EmployeeRotation, EmployeeTrai
 from app.models.hr import NotificationSchedule
 from app.models.inventory import InventoryBalance, InventoryItem, InventoryLot
 from app.models.maintenance_hse import MaintenanceWorkOrder
-from app.models.operational_logs import AssetMaintenanceJob
+from app.models.maintenance_hse import HseCorrectiveAction, HseIncident
+from app.models.operational_logs import AssetMaintenanceJob, OperationalExpense
 from app.models.role import user_roles
 from app.services.field_notifications import emit_event
 
@@ -31,6 +33,12 @@ RULES = {
     "EQUIPMENT_MAINTENANCE_DUE": "EQUIPMENT",
     "EQUIPMENT_STATUS_CHANGE": "EQUIPMENT",
     "PROJECT_MILESTONE_DUE": "PROJECTS",
+    "FINANCE_EXPENSE_PAYMENT_PENDING": "FINANCE",
+    "FINANCE_OPERATIONAL_EXPENSE_THRESHOLD": "FINANCE",
+    "FINANCE_PURCHASE_ORDER_THRESHOLD": "FINANCE",
+    "FINANCE_PURCHASE_ORDER_GOODS_RECEIVED": "FINANCE",
+    "HSE_CORRECTIVE_ACTION_DUE": "HSE",
+    "HSE_INCIDENT_FOLLOWUP_OVERDUE": "HSE",
 }
 FREQUENCIES = {
     "ONCE": 0,
@@ -44,15 +52,28 @@ FREQUENCIES = {
 
 def allowed_domains(actor):
     if actor.is_superuser:
-        return {"WORKFORCE", "INVENTORY", "EQUIPMENT", "PROJECTS"}
+        return {"WORKFORCE", "INVENTORY", "EQUIPMENT", "PROJECTS", "FINANCE", "HSE"}
     codes = {permission.code for role in scoped_roles(actor) for permission in role.permissions}
     domain_permissions = {
         "WORKFORCE": {"employees.alerts.manage"},
         "INVENTORY": {"inventory.manage", "inventory.admin", "inventory.write"},
         "EQUIPMENT": {"assets.update", "assets.manage", "assets.write"},
         "PROJECTS": {"projects.update", "projects.manage", "projects.write"},
+        "FINANCE": {"finance.expenses.manage", "operational_expenses.manage"},
+        "HSE": {"hse.manage", "hse.incidents.manage", "hse.write"},
     }
-    return {domain for domain, permissions in domain_permissions.items() if codes & permissions}
+    names = {role.name.strip().casefold() for role in scoped_roles(actor)}
+    role_domains = {
+        "FINANCE": {"finance", "accountant", "accounts payable"},
+        "HSE": {"hse", "hse officer", "hse manager", "safety", "safety officer"},
+    }
+    allowed = {
+        domain for domain, permissions in domain_permissions.items()
+        if codes & permissions or names & role_domains.get(domain, set())
+    }
+    if str(getattr(actor, "portal_type", "")).upper() == "FINANCE":
+        allowed.add("FINANCE")
+    return allowed
 
 
 def validate_schedule(schedule):
@@ -64,6 +85,85 @@ def validate_schedule(schedule):
         raise ValidationError("Unsupported delivery method")
     if not 0 <= schedule.lead_time_days <= 365:
         raise ValidationError("Lead time must be between 0 and 365 days")
+    if schedule.rule_type in {
+        "FINANCE_OPERATIONAL_EXPENSE_THRESHOLD",
+        "FINANCE_PURCHASE_ORDER_THRESHOLD",
+    } or (
+        schedule.rule_type == "FINANCE_PURCHASE_ORDER_GOODS_RECEIVED"
+        and (schedule.criteria or {}).get("threshold_amount") not in (None, "")
+    ):
+        try:
+            threshold = Decimal(str((schedule.criteria or {}).get("threshold_amount")))
+        except (InvalidOperation, TypeError, ValueError):
+            raise ValidationError("Enter a valid amount threshold")
+        if threshold < 0:
+            raise ValidationError("Amount threshold cannot be negative")
+
+
+async def emit_configured_event(
+    session,
+    organization_id: uuid.UUID,
+    rule_type: str,
+    event_key: str,
+    message: str,
+    amount: Decimal | int | float | str | None = None,
+    action_url: str | dict[str, str] | None = None,
+) -> int:
+    """Deliver an immediate event to recipients of matching configured rules."""
+    if amount is not None:
+        event_amount = Decimal(str(amount))
+    else:
+        event_amount = None
+    schedules = (
+        await session.scalars(
+            select(NotificationSchedule).where(
+                NotificationSchedule.organization_id == organization_id,
+                NotificationSchedule.domain == "FINANCE",
+                NotificationSchedule.rule_type == rule_type,
+                NotificationSchedule.is_active.is_(True),
+            )
+        )
+    ).all()
+    delivered = 0
+    for schedule in schedules:
+        threshold_value = (schedule.criteria or {}).get("threshold_amount")
+        if threshold_value not in (None, ""):
+            try:
+                threshold = Decimal(str(threshold_value))
+            except (InvalidOperation, TypeError, ValueError):
+                structlog.get_logger().warning(
+                    "notification_event_invalid_threshold",
+                    schedule_id=str(schedule.id),
+                    rule_type=rule_type,
+                )
+                continue
+            if event_amount is None or event_amount <= threshold:
+                continue
+        elif rule_type in {"FINANCE_OPERATIONAL_EXPENSE_THRESHOLD", "FINANCE_PURCHASE_ORDER_THRESHOLD"}:
+            continue
+        try:
+            async with session.begin_nested():
+                delivered += await emit_event(
+                    session,
+                    organization_id,
+                    await recipients(session, schedule),
+                    f"configured:{schedule.id}:{event_key}",
+                    f"[{schedule.priority_tag}] {schedule.title}: {message}",
+                    "FINANCE",
+                    "FINANCE_ALERT",
+                    schedule.priority_tag,
+                    schedule.delivery_method,
+                    schedule_id=schedule.id,
+                    action_url=action_url,
+                )
+        except Exception:
+            structlog.get_logger().exception(
+                "notification_event_delivery_failed",
+                schedule_id=str(schedule.id),
+                rule_type=rule_type,
+                event_key=event_key,
+            )
+    return delivered
 
 
 def next_run(now, frequency):
@@ -303,6 +403,50 @@ async def matching_alerts(session, schedule, today):
                     f"{project.expected_end_date.isoformat()}.",
                 )
             )
+    elif rule == "FINANCE_EXPENSE_PAYMENT_PENDING":
+        rows = (
+            await session.scalars(
+                select(OperationalExpense).where(
+                    OperationalExpense.organization_id == org,
+                    OperationalExpense.status == "SUBMITTED",
+                    OperationalExpense.expense_date <= cutoff,
+                )
+            )
+        ).all()
+        for expense in rows:
+            alerts.append((str(expense.id),
+                f"Expense {expense.expense_number} for {expense.total_cost} is awaiting finance payment; "
+                f"submitted on {expense.expense_date.isoformat()} for {expense.pay_to_name}."))
+    elif rule == "HSE_CORRECTIVE_ACTION_DUE":
+        rows = (
+            await session.scalars(
+                select(HseCorrectiveAction).where(
+                    HseCorrectiveAction.organization_id == org,
+                    HseCorrectiveAction.status.in_(["OPEN", "IN_PROGRESS", "UNDER_REVIEW"]),
+                    HseCorrectiveAction.due_date <= cutoff,
+                )
+            )
+        ).all()
+        for action in rows:
+            alerts.append((str(action.id),
+                f"HSE corrective action {action.action_number} is {action.status}; "
+                f"due on {action.due_date.isoformat()}: {action.description}."))
+    elif rule == "HSE_INCIDENT_FOLLOWUP_OVERDUE":
+        rows = (
+            await session.scalars(
+                select(HseIncident).where(
+                    HseIncident.organization_id == org,
+                    HseIncident.is_active.is_(True),
+                    HseIncident.archived_at.is_(None),
+                    HseIncident.status.in_(["REPORTED", "UNDER_INVESTIGATION", "CORRECTIVE_ACTION_PENDING"]),
+                    func.date(HseIncident.occurred_at) <= cutoff,
+                )
+            )
+        ).all()
+        for incident in rows:
+            alerts.append((str(incident.id),
+                f"HSE incident {incident.incident_number} ({incident.title}) remains {incident.status}; "
+                f"reported for {incident.occurred_at.date().isoformat()}."))
     if rule in {"WORKFORCE_LEAVE_PENDING", "WORKFORCE_LEAVE_UPCOMING"}:
         query = select(LeaveRequest).where(LeaveRequest.organization_id == org,
             LeaveRequest.end_date >= today,

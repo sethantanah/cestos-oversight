@@ -88,6 +88,7 @@ class DrillHole(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, Acto
         Index("ix_drill_holes_number", "organization_id", "project_id", "hole_number", unique=True),
     )
 
+    site_location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("locations.id"), index=True)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), index=True)
     program_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("drilling_programs.id"), index=True)
     hole_number: Mapped[str] = mapped_column(String(100))
@@ -116,6 +117,7 @@ class DrillingShiftReport(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveM
     )
 
     report_number: Mapped[str] = mapped_column(String(30))
+    site_location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("locations.id"), index=True)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), index=True)
     rig_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id"), index=True)
     program_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("drilling_programs.id"), index=True)

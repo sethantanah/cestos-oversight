@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, NoReturn
 
 import structlog
@@ -32,12 +32,15 @@ from app.models.employee import (
     EmployeeQualification,
     EmployeeTrainingRecord,
 )
-from app.models.hr import ContractAlertRule, EmailDelivery, Notification, PasswordSetup, Salary
+from app.models.hr import ContractAlertRule, DocumentDownloadRequest, EmailDelivery, Notification, PasswordSetup, Salary
 from app.schemas.employee import (EmergencyContactCreate, EmergencyContactUpdate, TimeLogCreate, TimeLogRead, LeaveRequestCreate, LeaveRequestRead)
 from app.schemas.hr import (
     AccountEmail,
     AlertRuleCreate,
     AlertRuleRead,
+    DocumentDownloadRequestCreate,
+    DocumentDownloadRequestRead,
+    DocumentDownloadRequestReview,
     PasswordReset,
     SalaryCreate,
     SalaryEnd,
@@ -972,3 +975,198 @@ async def get_workforce_stats(
         "by_department": by_department,
         "by_project": by_project,
     }
+
+
+async def _populate_download_request_read(
+    session: AsyncSession, req: DocumentDownloadRequest
+) -> DocumentDownloadRequestRead:
+    emp = await session.scalar(select(Employee).where(Employee.id == req.employee_id))
+    doc = await session.scalar(select(EmployeeDocument).where(EmployeeDocument.id == req.document_id))
+    req_user = await session.scalar(select(User).where(User.id == req.requested_by_id))
+
+    res = DocumentDownloadRequestRead.model_validate(req)
+    res.employee_name = f"{emp.first_name} {emp.last_name}" if emp else "Unknown"
+    res.document_title = doc.document_name if doc else "Document"
+    res.requested_by_name = f"{req_user.first_name} {req_user.last_name}" if req_user else "User"
+    return res
+
+
+@router.post(
+    "/employees/{employee_id}/document-download-requests",
+    response_model=DocumentDownloadRequestRead,
+    status_code=201,
+)
+async def create_document_download_request(
+    employee_id: uuid.UUID,
+    body: DocumentDownloadRequestCreate,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    doc = await session.scalar(
+        select(EmployeeDocument).where(
+            EmployeeDocument.id == body.document_id,
+            EmployeeDocument.employee_id == employee_id,
+            EmployeeDocument.organization_id == actor.organization_id,
+        )
+    )
+    if not doc:
+        doc = await session.scalar(
+            select(EmployeeDocument).where(EmployeeDocument.id == body.document_id)
+        )
+    if not doc:
+        doc = EmployeeDocument(
+            id=body.document_id,
+            organization_id=actor.organization_id,
+            employee_id=employee_id,
+            document_name="Requested HR Document",
+            document_type="OTHER",
+        )
+        session.add(doc)
+        await session.flush()
+
+    existing = await session.scalar(
+        select(DocumentDownloadRequest).where(
+            DocumentDownloadRequest.employee_id == employee_id,
+            DocumentDownloadRequest.document_id == body.document_id,
+            DocumentDownloadRequest.requested_by_id == actor.id,
+            DocumentDownloadRequest.status == "PENDING",
+        )
+    )
+    if existing:
+        raise ConflictError("A download request for this document is already pending HR review.")
+
+    req = DocumentDownloadRequest(
+        organization_id=actor.organization_id,
+        employee_id=employee_id,
+        document_id=body.document_id,
+        requested_by_id=actor.id,
+        status="PENDING",
+        reason=body.reason,
+    )
+    session.add(req)
+    await session.flush()
+
+    emp = await session.scalar(select(Employee).where(Employee.id == employee_id))
+    emp_name = f"{emp.first_name} {emp.last_name}" if emp else "Employee"
+
+    hr_users = (
+        await session.scalars(
+            select(User).where(
+                User.organization_id == actor.organization_id,
+                or_(User.portal_type == "HR", User.is_superuser.is_(True)),
+            )
+        )
+    ).all()
+    for hr_u in hr_users:
+        session.add(
+            Notification(
+                organization_id=actor.organization_id,
+                recipient_id=hr_u.id,
+                message=f"Field Admin {actor.first_name} {actor.last_name} requested download of '{doc.document_name}' for {emp_name}.",
+                domain="WORKFORCE",
+                priority_tag="IMPORTANT",
+            )
+        )
+
+    await session.commit()
+    return await _populate_download_request_read(session, req)
+
+
+@router.get("/document-download-requests", response_model=list[DocumentDownloadRequestRead])
+async def list_document_download_requests(
+    status_filter: str | None = Query(None, alias="status"),
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    stmt = select(DocumentDownloadRequest).where(
+        DocumentDownloadRequest.organization_id == actor.organization_id
+    )
+    if status_filter:
+        stmt = stmt.where(DocumentDownloadRequest.status == status_filter.upper())
+    stmt = stmt.order_by(DocumentDownloadRequest.created_at.desc())
+    requests = (await session.scalars(stmt)).all()
+    return [await _populate_download_request_read(session, r) for r in requests]
+
+
+@router.patch(
+    "/document-download-requests/{request_id}/review",
+    response_model=DocumentDownloadRequestRead,
+)
+async def review_document_download_request(
+    request_id: uuid.UUID,
+    body: DocumentDownloadRequestReview,
+    actor: User = Depends(require_permission("employees.documents.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    req = await session.scalar(
+        select(DocumentDownloadRequest).where(
+            DocumentDownloadRequest.id == request_id,
+            DocumentDownloadRequest.organization_id == actor.organization_id,
+        )
+    )
+    if not req:
+        raise NotFoundError("Download request not found")
+
+    req.status = body.status
+    req.reviewed_by_id = actor.id
+    req.reviewed_at = datetime.now(UTC)
+    req.review_notes = body.review_notes
+
+    doc = await session.scalar(select(EmployeeDocument).where(EmployeeDocument.id == req.document_id))
+    doc_name = doc.document_name if doc else "document"
+
+    if body.status == "APPROVED":
+        raw_token = str(uuid.uuid4()).replace("-", "")
+        req.download_token = token_hash(raw_token)[:32]
+        req.expires_at = datetime.now(UTC) + timedelta(hours=24)
+        msg = f"HR Approved your download request for '{doc_name}'. You may now download it."
+    else:
+        msg = f"HR Rejected your download request for '{doc_name}'. Reason: {body.review_notes or 'None provided'}."
+
+    session.add(
+        Notification(
+            organization_id=actor.organization_id,
+            recipient_id=req.requested_by_id,
+            message=msg,
+            domain="WORKFORCE",
+            priority_tag="IMPORTANT",
+        )
+    )
+
+    await session.commit()
+    return await _populate_download_request_read(session, req)
+
+
+@router.get("/document-download-requests/{request_id}/download")
+async def download_requested_document(
+    request_id: uuid.UUID,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    req = await session.scalar(
+        select(DocumentDownloadRequest).where(
+            DocumentDownloadRequest.id == request_id,
+            DocumentDownloadRequest.requested_by_id == actor.id,
+            DocumentDownloadRequest.organization_id == actor.organization_id,
+        )
+    )
+    if not req or req.status != "APPROVED":
+        raise ForbiddenError("Document download request is not approved")
+    if req.expires_at and req.expires_at < datetime.now(UTC):
+        raise ForbiddenError("Document download approval has expired (24h limit)")
+
+    doc = await session.scalar(
+        select(EmployeeDocument).where(
+            EmployeeDocument.id == req.document_id,
+            EmployeeDocument.organization_id == actor.organization_id,
+        )
+    )
+    if not doc or not doc.file_url:
+        raise NotFoundError("Document file not found")
+
+    return {
+        "file_url": doc.file_url,
+        "document_name": doc.document_name,
+        "mime_type": doc.mime_type,
+    }
+

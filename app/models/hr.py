@@ -52,6 +52,7 @@ class NotificationSchedule(UUIDMixin, TimestampMixin, OrganizationMixin, Base):
     title: Mapped[str] = mapped_column(String(200))
     domain: Mapped[str] = mapped_column(String(50))  # PROJECTS, WORKFORCE, EQUIPMENT, INVENTORY
     rule_type: Mapped[str] = mapped_column(String(50))  # e.g., INVENTORY_CONSUMABLES_EXPIRY, INVENTORY_LOW_STOCK, WORKFORCE_DOCUMENT_EXPIRY, EQUIPMENT_MAINTENANCE_DUE, EQUIPMENT_STATUS_CHANGE, PROJECT_MILESTONE_DUE
+    criteria: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     lead_time_days: Mapped[int] = mapped_column(default=14)
     frequency: Mapped[str] = mapped_column(String(20), default="DAILY")  # ONCE, DAILY, EVERY_OTHER_DAY, WEEKLY, BIWEEKLY, MONTHLY
     priority_tag: Mapped[str] = mapped_column(String(20), default="IMPORTANT")  # NORMAL, IMPORTANT, CRITICAL
@@ -84,6 +85,7 @@ class Notification(UUIDMixin, TimestampMixin, OrganizationMixin, Base):
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     recipient_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     message: Mapped[str] = mapped_column(String(1000))
+    action_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     domain: Mapped[str] = mapped_column(String(50), default="WORKFORCE")
     priority_tag: Mapped[str] = mapped_column(String(20), default="IMPORTANT")
@@ -109,9 +111,26 @@ class PasswordSetup(UUIDMixin, OrganizationMixin, Base):
 class EmailDelivery(UUIDMixin, TimestampMixin, OrganizationMixin, Base):
     __tablename__ = "email_deliveries"
     recipient_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    kind: Mapped[str] = mapped_column(String(20))
+    # Delivery kinds include longer event identifiers (for example,
+    # PURCHASE_ORDER_SUBMITTED); leave room for future notification flows.
+    kind: Mapped[str] = mapped_column(String(100))
     message: Mapped[str] = mapped_column(String(1000), default="")
+    action_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="PENDING")
     attempts: Mapped[int] = mapped_column(default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(String(200))
+
+
+class DocumentDownloadRequest(UUIDMixin, TimestampMixin, OrganizationMixin, Base):
+    __tablename__ = "document_download_requests"
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), index=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employee_documents.id"), index=True)
+    requested_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    reviewed_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    download_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

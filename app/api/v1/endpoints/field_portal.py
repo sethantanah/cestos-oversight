@@ -1,27 +1,296 @@
 """Field portal reads with explicit role and team boundaries."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 
-from app.core.dependencies import get_current_active_user, scoped_roles
+from app.core.dependencies import get_current_active_user, request_storage, scoped_roles
 from app.core.exceptions import ForbiddenError
 from app.db.session import get_session
-from app.models import Employee, EmployeeAssignment, User
+from app.models import Employee, EmployeeAssignment, User, Project, Location, Asset
+from app.models.operational_logs import FuelDelivery, FuelAllocation
 from app.models.employee import AssignmentStatus, LeaveRequest
 from app.schemas.drilling import DrillingShiftReportResponse
-from app.schemas.operational_logs import FuelLogCreate, FuelReductionCreate, MaintenanceCreate
+from app.schemas.operational_logs import FuelLogCreate, FuelReductionCreate, MaintenanceCreate, FuelDeliveryCreate, FuelAllocationCreate, FuelDeliveryUpdate, FuelAllocationUpdate
 from app.services.employee_access import supervised_employee_ids
 from app.services.field_consumables import ConsumptionCreate
 from app.services.field_shifts import FieldShiftEdit
 from app.services.field_work import FieldWorkEdit, FieldWorkUpdate
 
 router = APIRouter(prefix="/field-portal", tags=["Field portal"])
+
+
+@router.post("/fuel-deliveries", status_code=201)
+async def create_fuel_delivery(body: FuelDeliveryCreate, actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session)):
+    project = await session.scalar(select(Project).where(Project.id == body.project_id, Project.organization_id == actor.organization_id))
+    site = await session.scalar(select(Location).where(Location.id == body.site_location_id, Location.project_id == body.project_id, Location.organization_id == actor.organization_id, Location.is_active.is_(True), Location.archived_at.is_(None)))
+    if not project or not site:
+        raise ForbiddenError("Select an active site belonging to the selected project")
+    row = FuelDelivery(organization_id=actor.organization_id, created_by_id=actor.id, **body.model_dump())
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+@router.get("/fuel-deliveries")
+async def list_fuel_deliveries(actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session)):
+    return list((await session.scalars(select(FuelDelivery).where(
+        FuelDelivery.organization_id == actor.organization_id,
+        FuelDelivery.archived_at.is_(None),
+    ).order_by(FuelDelivery.recorded_at.desc()))).all())
+
+
+@router.patch("/fuel-deliveries/{delivery_id}")
+async def update_fuel_delivery(
+    delivery_id: uuid.UUID,
+    body: FuelDeliveryUpdate,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+):
+    delivery = await session.scalar(
+        select(FuelDelivery).where(
+            FuelDelivery.id == delivery_id,
+            FuelDelivery.organization_id == actor.organization_id,
+            FuelDelivery.archived_at.is_(None),
+        )
+    )
+    if not delivery:
+        raise ForbiddenError("Fuel delivery record not found")
+
+    log_time = delivery.recorded_at or delivery.created_at
+    if log_time:
+        now_utc = datetime.now(timezone.utc)
+        if log_time.tzinfo is None:
+            log_time = log_time.replace(tzinfo=timezone.utc)
+        if (now_utc - log_time) > timedelta(days=2):
+            raise ForbiddenError("Fuel delivery records older than 2 days cannot be edited.")
+
+    update_data = body.model_dump(exclude_unset=True)
+    for key, val in update_data.items():
+        setattr(delivery, key, val)
+
+    session.add(delivery)
+    await session.commit()
+    await session.refresh(delivery)
+    return delivery
+
+
+@router.post("/fuel-deliveries/{delivery_id}/receipt")
+async def upload_fuel_delivery_receipt(
+    delivery_id: uuid.UUID,
+    receipt: UploadFile = File(...),
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+    storage=Depends(request_storage),
+):
+    delivery = await session.scalar(select(FuelDelivery).where(
+        FuelDelivery.id == delivery_id,
+        FuelDelivery.organization_id == actor.organization_id,
+        FuelDelivery.archived_at.is_(None),
+    ).with_for_update())
+    if not delivery:
+        raise HTTPException(404, "Fuel delivery record not found")
+    data = await receipt.read(storage.max_bytes + 1)
+    if not data:
+        raise HTTPException(422, "Attach a non-empty receipt or delivery docket")
+    try:
+        stored = await run_in_threadpool(
+            storage.save,
+            f"documents/{actor.organization_id}/fuel-deliveries",
+            data,
+            receipt.filename or "fuel-delivery-receipt.pdf",
+            receipt.content_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    old_path = delivery.receipt_path
+    delivery.receipt_path = stored.relative_path
+    delivery.receipt_file_name = stored.filename
+    delivery.receipt_mime_type = stored.mime_type
+    delivery.receipt_size_bytes = stored.size_bytes
+    delivery.updated_by_id = actor.id
+    await session.commit()
+    await session.refresh(delivery)
+    if old_path and old_path != stored.relative_path:
+        await run_in_threadpool(storage.delete, old_path)
+    return {
+        "delivery_id": str(delivery.id),
+        "receipt_file_name": delivery.receipt_file_name,
+        "receipt_mime_type": delivery.receipt_mime_type,
+        "receipt_size_bytes": delivery.receipt_size_bytes,
+    }
+
+
+@router.get("/fuel-deliveries/{delivery_id}/receipt")
+async def download_fuel_delivery_receipt(
+    delivery_id: uuid.UUID,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+    storage=Depends(request_storage),
+):
+    delivery = await session.scalar(select(FuelDelivery).where(
+        FuelDelivery.id == delivery_id,
+        FuelDelivery.organization_id == actor.organization_id,
+        FuelDelivery.archived_at.is_(None),
+    ))
+    if not delivery:
+        raise HTTPException(404, "Fuel delivery record not found")
+    if not delivery.receipt_path or not delivery.receipt_file_name:
+        raise HTTPException(404, "No uploaded receipt is available for this fuel delivery")
+    local = await run_in_threadpool(storage.resolve, delivery.receipt_path)
+    return FileResponse(local, filename=delivery.receipt_file_name, media_type=delivery.receipt_mime_type)
+
+
+@router.post("/fuel-allocations", status_code=201)
+async def create_fuel_allocation(body: FuelAllocationCreate, actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session)):
+    project = await session.scalar(select(Project).where(Project.id == body.project_id, Project.organization_id == actor.organization_id))
+    site = await session.scalar(select(Location).where(Location.id == body.site_location_id, Location.project_id == body.project_id, Location.organization_id == actor.organization_id, Location.is_active.is_(True), Location.archived_at.is_(None)))
+    asset = await session.scalar(select(Asset).where(Asset.id == body.asset_id, Asset.organization_id == actor.organization_id))
+    if not project or not site or not asset:
+        raise ForbiddenError("Select a valid project site and vehicle")
+    if body.delivery_id:
+        delivery = await session.scalar(select(FuelDelivery).where(
+            FuelDelivery.id == body.delivery_id,
+            FuelDelivery.organization_id == actor.organization_id,
+            FuelDelivery.project_id == body.project_id,
+            FuelDelivery.site_location_id == body.site_location_id,
+            FuelDelivery.archived_at.is_(None),
+        ))
+        if not delivery:
+            raise ForbiddenError("Select a fuel delivery from the same project site")
+    row = FuelAllocation(organization_id=actor.organization_id, created_by_id=actor.id, **body.model_dump())
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return {
+        "id": row.id,
+        "organization_id": row.organization_id,
+        "project_id": row.project_id,
+        "site_location_id": row.site_location_id,
+        "asset_id": row.asset_id,
+        "delivery_id": row.delivery_id,
+        "recorded_at": row.recorded_at.isoformat() if row.recorded_at else (row.created_at.isoformat() if row.created_at else None),
+        "allocated_at": row.recorded_at.isoformat() if row.recorded_at else (row.created_at.isoformat() if row.created_at else None),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "quantity_litres": row.quantity_litres,
+        "notes": row.notes,
+        "asset_name": asset.name or asset.asset_number or "Asset",
+        "asset_number": asset.asset_number or "",
+        "asset": {
+            "id": asset.id,
+            "name": asset.name or asset.asset_number or "Asset",
+            "asset_number": asset.asset_number or "",
+        },
+    }
+
+
+@router.get("/fuel-allocations")
+async def list_fuel_allocations(actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session)):
+    stmt = (
+        select(FuelAllocation, Asset.name.label("ast_name"), Asset.asset_number.label("ast_number"))
+        .outerjoin(Asset, FuelAllocation.asset_id == Asset.id)
+        .where(
+            FuelAllocation.organization_id == actor.organization_id,
+            FuelAllocation.archived_at.is_(None),
+        )
+        .order_by(FuelAllocation.recorded_at.desc())
+    )
+    result = await session.execute(stmt)
+    output = []
+    for alloc, ast_name, ast_number in result.all():
+        d = {
+            "id": alloc.id,
+            "organization_id": alloc.organization_id,
+            "project_id": alloc.project_id,
+            "site_location_id": alloc.site_location_id,
+            "asset_id": alloc.asset_id,
+            "delivery_id": alloc.delivery_id,
+            "recorded_at": alloc.recorded_at.isoformat() if alloc.recorded_at else (alloc.created_at.isoformat() if alloc.created_at else None),
+            "allocated_at": alloc.recorded_at.isoformat() if alloc.recorded_at else (alloc.created_at.isoformat() if alloc.created_at else None),
+            "created_at": alloc.created_at.isoformat() if alloc.created_at else None,
+            "quantity_litres": alloc.quantity_litres,
+            "notes": alloc.notes,
+            "asset_name": ast_name or ast_number or "Asset",
+            "asset_number": ast_number or "",
+            "asset": {
+                "id": alloc.asset_id,
+                "name": ast_name or ast_number or "Asset",
+                "asset_number": ast_number or "",
+            } if alloc.asset_id else None,
+        }
+        output.append(d)
+    return output
+
+
+@router.patch("/fuel-allocations/{allocation_id}")
+async def update_fuel_allocation(
+    allocation_id: uuid.UUID,
+    body: FuelAllocationUpdate,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+):
+    allocation = await session.scalar(
+        select(FuelAllocation).where(
+            FuelAllocation.id == allocation_id,
+            FuelAllocation.organization_id == actor.organization_id,
+            FuelAllocation.archived_at.is_(None),
+        )
+    )
+    if not allocation:
+        raise ForbiddenError("Fuel allocation record not found")
+
+    log_time = allocation.recorded_at or allocation.created_at
+    if log_time:
+        now_utc = datetime.now(timezone.utc)
+        if log_time.tzinfo is None:
+            log_time = log_time.replace(tzinfo=timezone.utc)
+        if (now_utc - log_time) > timedelta(days=1):
+            raise ForbiddenError("Fuel allocation records older than 1 day cannot be edited.")
+
+    update_data = body.model_dump(exclude_unset=True)
+    for key, val in update_data.items():
+        setattr(allocation, key, val)
+
+    session.add(allocation)
+    await session.commit()
+    await session.refresh(allocation)
+
+    asset = None
+    if allocation.asset_id:
+        asset = await session.scalar(select(Asset).where(Asset.id == allocation.asset_id, Asset.organization_id == actor.organization_id))
+
+    ast_name = asset.name if asset else "Asset"
+    ast_number = asset.asset_number if asset else ""
+
+    return {
+        "id": allocation.id,
+        "organization_id": allocation.organization_id,
+        "project_id": allocation.project_id,
+        "site_location_id": allocation.site_location_id,
+        "asset_id": allocation.asset_id,
+        "delivery_id": allocation.delivery_id,
+        "recorded_at": allocation.recorded_at.isoformat() if allocation.recorded_at else (allocation.created_at.isoformat() if allocation.created_at else None),
+        "allocated_at": allocation.recorded_at.isoformat() if allocation.recorded_at else (allocation.created_at.isoformat() if allocation.created_at else None),
+        "created_at": allocation.created_at.isoformat() if allocation.created_at else None,
+        "quantity_litres": allocation.quantity_litres,
+        "notes": allocation.notes,
+        "asset_name": ast_name or ast_number or "Asset",
+        "asset_number": ast_number or "",
+        "asset": {
+            "id": allocation.asset_id,
+            "name": ast_name or ast_number or "Asset",
+            "asset_number": ast_number or "",
+        } if allocation.asset_id else None,
+    }
 
 
 class TeamLeaveRead(BaseModel):
@@ -279,3 +548,75 @@ async def create_field_consumables(
 ):
     from app.services.field_consumables import log_consumption
     return await log_consumption(session, actor, body)
+
+
+@router.get("/sites")
+async def field_project_sites(
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+):
+    from app.models import Project
+    from app.models.location import Location
+    from app.services.field_equipment import assigned_project_ids
+    rows = await session.execute(select(Location.id, Location.name, Location.project_id,
+        Project.name.label("project_name")).join(Project, Project.id == Location.project_id).where(
+        Location.organization_id == actor.organization_id, Location.is_active.is_(True),
+        Location.archived_at.is_(None), Location.location_type != "HEAD_OFFICE",
+        Project.organization_id == actor.organization_id,
+        Project.id.in_(assigned_project_ids(actor))).order_by(Location.name))
+    return [dict(row) for row in rows.mappings()]
+
+
+@router.post("/employees/{employee_id}/contracts", status_code=201)
+async def upload_field_employee_contract(
+    employee_id: uuid.UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    title: str | None = Form(None),
+    start_date: date | None = Form(None),
+    end_date: date | None = Form(None),
+    notes: str | None = Form(None),
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+):
+    from app.core.config import request_storage
+    from app.models import Employee
+    from app.schemas.document import DocumentType
+    from app.services.documents import DocumentService
+
+    employee = await session.scalar(
+        select(Employee).where(
+            Employee.id == employee_id,
+            Employee.organization_id == actor.organization_id,
+        )
+    )
+    if not employee:
+        raise ForbiddenError("Employee profile not found in your organization")
+
+    if start_date:
+        employee.contract_start_date = start_date
+    if end_date:
+        employee.contract_end_date = end_date
+    session.add(employee)
+
+    data = await file.read()
+    doc_title = title or f"Employment Contract - {employee.first_name or ''} {employee.last_name or ''}".strip() or file.filename
+    storage = request_storage(request)
+    doc = await DocumentService(session, actor).upload(
+        employee_id,
+        data,
+        file.filename,
+        file.content_type,
+        storage,
+        DocumentType.EMPLOYMENT_CONTRACT,
+        doc_title,
+        None,
+        start_date,
+        end_date,
+        None,
+        notes,
+        request,
+    )
+    await session.commit()
+    return {"message": "Employment contract uploaded successfully", "employee_id": str(employee_id), "document_id": str(doc.id)}
+

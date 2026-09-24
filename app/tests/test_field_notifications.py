@@ -295,6 +295,7 @@ async def test_mail_subject_destination_and_delivery_use_same_recipient(field_db
         "Assigned to a project",
         "PROJECTS",
         "PROJECT_ASSIGNMENT",
+        action_url="/field-portal?tab=PURCHASE_ORDERS&purchase_order_id=po-test",
     )
     f.session.commit()
     captured = []
@@ -305,7 +306,10 @@ async def test_mail_subject_destination_and_delivery_use_same_recipient(field_db
     assert await mail.deliver_one(f.db, settings)
     assert captured[0][1] == f.worker.email
     assert captured[0][2] == "Cestos project assignment update"
-    assert "/field-portal/notifications" in captured[0][3]
+    assert "/field-portal?tab=PURCHASE_ORDERS&amp;purchase_order_id=po-test" in captured[0][3]
+    [notification] = f.session.scalars(select(Notification)).all()
+    [delivery] = f.session.scalars(select(EmailDelivery)).all()
+    assert notification.action_url == delivery.action_url == "/field-portal?tab=PURCHASE_ORDERS&purchase_order_id=po-test"
     assert f.session.scalar(select(EmailDelivery)).status == "SENT"
 
 

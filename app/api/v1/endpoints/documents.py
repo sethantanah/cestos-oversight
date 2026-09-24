@@ -111,6 +111,8 @@ async def library(
     view: Literal["all", "for-you", "public", "super-private"] = "for-you",
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
+    source_type: str | None = None,
+    source_id: uuid.UUID | None = None,
     actor: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -125,6 +127,10 @@ async def library(
         scope.append(D.category == category)
     if tag:
         scope.append(D.tags.contains([tag.lower()]))
+    if source_type:
+        scope.append(D.source_type == source_type)
+    if source_id:
+        scope.append(D.source_id == source_id)
     query = select(D).where(*scope).order_by(D.created_at.desc(), D.id.desc())
     search_warning = None
     if q.strip():
@@ -243,6 +249,9 @@ async def upload(
     title: str = Form(""),
     category: str = Form("General"),
     tags: str = Form(""),
+    source_type: str | None = Form(None),
+    source_id: uuid.UUID | None = Form(None),
+    visibility: Literal["PRIVATE", "PUBLIC"] = Form("PRIVATE"),
     actor: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_session),
     storage=Depends(request_storage),
@@ -257,6 +266,25 @@ async def upload(
         raise ValidationError(
             "Check the title, category and tags (up to 20 tags, 40 characters each)"
         ) from error
+    if bool(source_type) != bool(source_id):
+        raise ValidationError("Both source type and source ID are required to link a document")
+    if source_type:
+        if source_type not in {"pm_job_card", "breakdown_job_card", "hse_incident"}:
+            raise ValidationError("Unsupported linked document type")
+        if source_type == "hse_incident":
+            from app.models.maintenance_hse import HseIncident
+            linked_model = HseIncident
+        else:
+            from app.models.operational_logs import BreakdownJobCard, PMJobCard
+            linked_model = PMJobCard if source_type == "pm_job_card" else BreakdownJobCard
+        linked_record = await session.scalar(select(linked_model.id).where(
+            linked_model.id == source_id,
+            linked_model.organization_id == actor.organization_id,
+            linked_model.archived_at.is_(None),
+        ))
+        if linked_record is None:
+            raise NotFoundError("Maintenance job card not found")
+        visibility = "PUBLIC"
     data = await file.read(storage.max_bytes + 1)
     if not data:
         raise ValidationError("Choose a non-empty file")
@@ -274,8 +302,8 @@ async def upload(
     row = D(
         id=identifier,
         organization_id=actor.organization_id,
-        source_type="library",
-        source_id=identifier,
+        source_type=source_type or "library",
+        source_id=source_id or identifier,
         title=metadata.title,
         category=metadata.category,
         tags=metadata.tags,
@@ -284,7 +312,7 @@ async def upload(
         mime_type=stored.mime_type,
         size_bytes=stored.size_bytes,
         owner_id=actor.id,
-        visibility="PRIVATE",
+        visibility=visibility,
     )
     try:
         session.add(row)

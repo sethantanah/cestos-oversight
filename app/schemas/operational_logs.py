@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -22,6 +22,17 @@ class FuelLogCreate(Input):
     reference_number: str | None = Field(default=None, max_length=100)
     notes: str | None = Field(default=None, max_length=20000)
 
+
+class FuelDeliveryCreate(Input):
+    project_id: uuid.UUID
+    site_location_id: uuid.UUID
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    fuel_type: Literal["DIESEL", "PETROL", "OTHER"] = "DIESEL"
+    quantity_litres: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+    supplier: str | None = Field(default=None, max_length=200)
+    reference_number: str | None = Field(default=None, max_length=100)
+    notes: str | None = Field(default=None, max_length=20000)
+
     @field_validator("recorded_at")
     @classmethod
     def past_time(cls, value: datetime) -> datetime:
@@ -34,8 +45,67 @@ class MaintenanceChecklistItem(Input):
     id: str = Field(min_length=1, max_length=100)
     task: str = Field(min_length=1, max_length=500)
     completed: bool = False
+class FuelDeliveryUpdate(Input):
+    recorded_at: datetime | None = None
+    fuel_type: Literal["DIESEL", "PETROL", "OTHER"] | None = None
+    quantity_litres: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=3)
+    supplier: str | None = Field(default=None, max_length=200)
+    reference_number: str | None = Field(default=None, max_length=100)
+    notes: str | None = Field(default=None, max_length=20000)
 
 
+class FuelAllocationCreate(Input):
+    project_id: uuid.UUID
+    site_location_id: uuid.UUID
+    asset_id: uuid.UUID
+    delivery_id: uuid.UUID | None = None
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    quantity_litres: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+    notes: str | None = Field(default=None, max_length=20000)
+
+    @field_validator("recorded_at", mode="before")
+    @classmethod
+    def past_time(cls, value: Any) -> datetime:
+        if isinstance(value, str):
+            v_str = value.strip()
+            if len(v_str) == 10:
+                v_str = f"{v_str}T12:00:00Z"
+            elif not v_str.endswith("Z") and "+" not in v_str and "-" not in v_str[10:]:
+                v_str = f"{v_str}Z"
+            value = datetime.fromisoformat(v_str.replace("Z", "+00:00"))
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            if value > datetime.now(UTC) + timedelta(minutes=10):
+                raise ValueError("Choose a timestamp that is not in the future")
+        return value
+
+
+class FuelAllocationUpdate(Input):
+    asset_id: uuid.UUID | None = None
+    delivery_id: uuid.UUID | None = None
+    recorded_at: datetime | None = None
+    quantity_litres: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=3)
+    notes: str | None = Field(default=None, max_length=20000)
+
+    @field_validator("recorded_at", mode="before")
+    @classmethod
+    def past_time(cls, value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            v_str = value.strip()
+            if len(v_str) == 10:
+                v_str = f"{v_str}T12:00:00Z"
+            elif not v_str.endswith("Z") and "+" not in v_str and "-" not in v_str[10:]:
+                v_str = f"{v_str}Z"
+            value = datetime.fromisoformat(v_str.replace("Z", "+00:00"))
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            if value > datetime.now(UTC) + timedelta(minutes=10):
+                raise ValueError("Choose a timestamp that is not in the future")
+        return value
 class MaintenanceCreate(Input):
     checklist: list[MaintenanceChecklistItem] = Field(default_factory=list, max_length=100)
     asset_id: uuid.UUID | None = None

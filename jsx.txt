@@ -1,0 +1,100 @@
+            {/* 1. Operational Expenditure & Expense Trend (Full Row FIRST) */}
+            <div className="p-5 bg-card border rounded-2xl shadow-sm space-y-3">
+              <div className="flex items-center justify-between border-b pb-3 border-border">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-violet-100 dark:bg-violet-950 text-violet-600">
+                    <TrendingUp size={18} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-foreground">Operational Expenditure &amp; Expense Trend ($)</h3>
+                    <p className="text-[11px] text-muted-foreground">Daily breakdown of total operational expenses ($) and approved expenditure</p>
+                  </div>
+                </div>
+              </div>
+
+              {expenseTimeSeriesData.length === 0 ? (
+                <EmptyState message="No expense time-series data available for the selected range." />
+              ) : (
+                <div className="h-72 w-full pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={expenseTimeSeriesData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="currentColor" className="text-border opacity-40" />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis stroke="#8b5cf6" tick={{ fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: 'var(--background)', borderRadius: '12px', border: '1px solid var(--border)' }}
+                        formatter={(val: any) => [`$${Number(val).toLocaleString()}`]}
+                      />
+                      <Legend />
+                      <Bar dataKey="totalCost" fill="#8b5cf6" radius={[6, 6, 0, 0]} name="Total Expense Requested ($)" />
+                      <Line type="monotone" dataKey="approvedCost" stroke="#10b981" strokeWidth={3} dot={{ r: 4 }} name="Approved Expenditure ($)" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            {/* 2. Purchasing Intelligence Bar Charts Grid (3 Columns SECOND) */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Top Cost Items */}
+              <div className="p-4 bg-card border rounded-2xl shadow-xs space-y-3">
+                <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  <DollarSign size={14} className="text-violet-600" /> Top Cost Items ($)
+                </h4>
+                {topItemsByCostData.length === 0 ? (
+                  <p className="text-xs text-muted-foreground py-6 text-center">No cost item data</p>
+                ) : (
+                  <div className="h-56 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topItemsByCostData} layout="vertical" margin={{ top: 5, right: 15, left: 40, bottom: 5 }}>
+                        <XAxis type="number" tick={{ fontSize: 9 }} />
+                        <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={70} />
+                        <Tooltip formatter={(val: any) => [`$${Number(val).toLocaleString()}`, 'Total Cost']} />
+                        <Bar dataKey="totalCost" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+
+              {/* Most Frequent Items */}
+              <div className="p-4 bg-card border rounded-2xl shadow-xs space-y-3">
+                <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  <Package size={14} className="text-emerald-600" /> Most Frequent Items
+                </h4>
+                {topItemsByFrequencyData.length === 0 ? (
+                  <p className="text-xs text-muted-foreground py-6 text-center">No item frequency data</p>
+                ) : (
+                  <div className="h-56 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topItemsByFrequencyData} layout="vertical" margin={{ top: 5, right: 15, left: 40, bottom: 5 }}>
+                        <XAxis type="number" tick={{ fontSize: 9 }} />
+                        <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={70} />
+                        <Tooltip formatter={(val: any) => [`${Number(val)} times`, 'Purchase Frequency']} />
+                        <Bar dataKey="frequency" fill="#10b981" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+
+              {/* Vendor Expenditure */}
+              <div className="p-4 bg-card border rounded-2xl shadow-xs space-y-3">
+                <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  <Building2 size={14} className="text-amber-600" /> Vendor Breakdown ($)
+                </h4>
+                {topVendorData.length === 0 ? (
+                  <p className="text-xs text-muted-foreground py-6 text-center">No vendor data</p>
+                ) : (
+                  <div className="h-56 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topVendorData} layout="vertical" margin={{ top: 5, right: 15, left: 40, bottom: 5 }}>
+                        <XAxis type="number" tick={{ fontSize: 9 }} />
+                        <YAxis type="category" dataKey="vendor" tick={{ fontSize: 10 }} width={70} />
+                        <Tooltip formatter={(val: any) => [`$${Number(val).toLocaleString()}`, 'Vendor Spend']} />
+                        <Bar dataKey="totalCost" fill="#f59e0b" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>

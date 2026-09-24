@@ -18,6 +18,19 @@ def test_backend_modules_and_application_import():
     assert application.openapi()["paths"]
 
 
+def test_legacy_hse_incident_routes_remain_registered():
+    application = create_app(make_settings())
+    registered = {
+        (route.path, method)
+        for route in application.routes
+        for method in getattr(route, "methods", set())
+    }
+    assert ("/api/v1/incidents", "POST") in registered
+    assert ("/api/v1/incidents", "GET") in registered
+    assert ("/api/v1/incidents/{incident_id}", "GET") in registered
+    assert ("/api/v1/incidents/{incident_id}", "PATCH") in registered
+
+
 def test_user_service_annotations_resolve():
     for name in (
         "list_permissions",
