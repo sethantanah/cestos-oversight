@@ -7,11 +7,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_active_user, request_storage
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.dependencies import get_current_active_user, request_storage, scoped_roles
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.storage import LocalStorage
 from app.db.session import get_session
 from app.models import Asset, Employee, Location, Project, User
@@ -23,6 +23,109 @@ from app.services.inventory_queries import InventoryQueries
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 operational_router = APIRouter(tags=["inventory"])
+
+
+@router.get("/supplier-options")
+async def supplier_options(
+    search: str | None = Query(None, max_length=200),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=200),
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """Small supplier lookup used by asset forms, independent of optional profile columns."""
+    stmt = select(m.Supplier.id, m.Supplier.name).where(
+        m.Supplier.organization_id == actor.organization_id,
+        m.Supplier.is_active.is_(True),
+        m.Supplier.archived_at.is_(None),
+    )
+    count_stmt = select(func.count()).select_from(m.Supplier).where(
+        m.Supplier.organization_id == actor.organization_id,
+        m.Supplier.is_active.is_(True),
+        m.Supplier.archived_at.is_(None),
+    )
+    if search:
+        pattern = f"%{search.strip()}%"
+        stmt = stmt.where(m.Supplier.name.ilike(pattern))
+        count_stmt = count_stmt.where(m.Supplier.name.ilike(pattern))
+    total = int((await session.scalar(count_stmt)) or 0)
+    rows = (await session.execute(
+        stmt.order_by(m.Supplier.name).offset((page - 1) * page_size).limit(page_size)
+    )).all()
+    return {
+        "items": [{"id": str(row.id), "name": row.name} for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": (total + page_size - 1) // page_size,
+    }
+
+
+@router.get("/supplier-options/{identifier}")
+async def supplier_option(
+    identifier: uuid.UUID,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    row = (await session.execute(
+        select(m.Supplier.id, m.Supplier.name).where(
+            m.Supplier.id == identifier,
+            m.Supplier.organization_id == actor.organization_id,
+            m.Supplier.is_active.is_(True),
+            m.Supplier.archived_at.is_(None),
+        )
+    )).first()
+    if not row:
+        raise NotFoundError("Supplier not found")
+    return {"id": str(row.id), "name": row.name}
+
+
+@router.post("/supplier-options", status_code=201)
+async def create_supplier_option(
+    body: schemas.SupplierCreate,
+    actor: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """Create a shared supplier from an equipment form for authorized asset/inventory users."""
+    allowed = actor.is_superuser or any(
+        permission.code in {"assets.create", "inventory.catalog.manage", "inventory.admin"}
+        for role in scoped_roles(actor)
+        for permission in role.permissions
+    )
+    if not allowed:
+        raise ForbiddenError("You do not have permission to create a supplier")
+
+    name = body.name.strip()
+    if not name:
+        raise ValidationError("Supplier name is required")
+    duplicate = await session.scalar(
+        select(m.Supplier.id).where(
+            m.Supplier.organization_id == actor.organization_id,
+            func.lower(m.Supplier.name) == name.lower(),
+        )
+    )
+    if duplicate:
+        raise ConflictError("A supplier with this name already exists")
+
+    supplier = m.Supplier(
+        organization_id=actor.organization_id,
+        created_by_id=actor.id,
+        name=name,
+        contact_name=body.contact_name,
+        email=body.email,
+        phone=body.phone,
+        notes=body.notes,
+        is_active=True,
+    )
+    session.add(supplier)
+    try:
+        await session.flush()
+        InventoryService(session, actor).audit("supplier_created", supplier, {"name": name})
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    return {"id": str(supplier.id), "name": supplier.name}
 
 
 def permission(code: str) -> Any:
