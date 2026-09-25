@@ -236,7 +236,7 @@ async def legacy_create_incident(
                 id=document_id,
                 organization_id=actor.organization_id,
                 source_type="hse_incident",
-                source_id=uuid.uuid4(),
+                source_id=incident.id,
                 title=f"HSE Incident {incident.incident_number} - {uploaded.filename or 'Evidence'}",
                 category="HSE",
                 tags=["hse_incident", str(incident.id)],
@@ -246,6 +246,7 @@ async def legacy_create_incident(
                 size_bytes=stored.size_bytes,
                 owner_id=actor.id,
                 visibility="PUBLIC",
+                index_status="PENDING",
             )
             session.add(doc)
             attachments.append({"id": str(document_id), "document_id": str(document_id), "filename": doc.file_name, "file_size": f"{doc.size_bytes / 1024:.1f} KB"})

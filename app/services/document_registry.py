@@ -11,7 +11,14 @@ from app.models import AssetDocument, AuditLog, EmployeeDocument, EmployeeResume
 from app.models.asset_records import AssetMedia
 from app.models.document_library import LibraryDocument as D
 from app.models.employee import LeaveRequest
-from app.models.operational_logs import AssetLogFile, ProjectRecord
+from app.models.operational_logs import (
+    AssetLogFile,
+    FuelDelivery,
+    OperationalExpense,
+    OperationalExpensePayment,
+    ProjectRecord,
+)
+from app.models.procurement import PurchaseOrder
 from app.models.project_report import ProjectReport
 from app.services.document_access import visible_scope
 
@@ -24,6 +31,29 @@ SOURCES = {
     ProjectRecord: ("storage_path", "Projects"),
     ProjectReport: ("storage_path", "Projects"),
     LeaveRequest: ("attachment_url", "Leave"),
+    PurchaseOrder: ("attachment_path", "Procurement"),
+    FuelDelivery: ("receipt_path", "Field Operations"),
+    OperationalExpensePayment: ("receipt_path", "Finance"),
+    OperationalExpense: [
+        (
+            "invoice_path",
+            "Finance",
+            "invoice_name",
+            "invoice_mime_type",
+            "invoice_size_bytes",
+            "Invoice",
+            "operational_expenses_invoice",
+        ),
+        (
+            "receipt_path",
+            "Finance",
+            "receipt_name",
+            "receipt_mime_type",
+            "receipt_size_bytes",
+            "Receipt",
+            "operational_expenses_receipt",
+        ),
+    ],
 }
 FILE_MODELS = (
     EmployeeDocument,
@@ -32,43 +62,88 @@ FILE_MODELS = (
     AssetMedia,
     AssetLogFile,
     ProjectRecord,
+    PurchaseOrder,
+    FuelDelivery,
+    OperationalExpensePayment,
+    OperationalExpense,
 )
 
 
 def source_values(row, actor_id=None):
     model = type(row)
-    path_key, category = SOURCES[model]
-    path = getattr(row, path_key, None)
-    if not path or path.startswith(("https:", "http:")):
-        return None
-    if isinstance(row, AssetMedia) and row.media_type in {"PHOTO", "VIDEO"}:
-        return None
-    if isinstance(row, AssetLogFile) and row.log_type in {"STORE", "ITEM"}:
-        category = "Inventory"
-    return dict(
-        id=uuid.uuid4(),
-        organization_id=row.organization_id,
-        source_type=row.__tablename__,
-        source_id=row.id,
-        title=(getattr(row, "title", None) or getattr(row, "file_name", None) or "Leave letter")[
-            :250
-        ],
-        category=category,
-        tags=[],
-        storage_path=path,
-        file_name=(getattr(row, "file_name", None) or PurePosixPath(path).name)[:255],
-        mime_type=getattr(row, "mime_type", None) or "application/octet-stream",
-        size_bytes=getattr(row, "size_bytes", None) or getattr(row, "file_size", None) or 0,
-        owner_id=actor_id
-        or getattr(row, "uploaded_by_id", None)
-        or getattr(row, "created_by_id", None),
-        employee_id=getattr(row, "employee_id", None),
-        visibility="PRIVATE",
-        is_active=getattr(row, "is_active", True),
-        index_status="PENDING",
-        extracted_text="",
-        chunks=[],
-    )
+    if model not in SOURCES:
+        return []
+    spec = SOURCES[model]
+    spec_list = spec if isinstance(spec, list) else [spec]
+    results = []
+
+    for spec_item in spec_list:
+        path_key = spec_item[0]
+        category = spec_item[1]
+        path = getattr(row, path_key, None)
+        if not path or path.startswith(("https:", "http:")):
+            continue
+        if isinstance(row, AssetMedia) and row.media_type in {"PHOTO", "VIDEO"}:
+            continue
+        if isinstance(row, AssetLogFile) and row.log_type in {"STORE", "ITEM"}:
+            category = "Inventory"
+
+        file_name_attr = spec_item[2] if len(spec_item) > 2 else "file_name"
+        mime_type_attr = spec_item[3] if len(spec_item) > 3 else "mime_type"
+        size_bytes_attr = spec_item[4] if len(spec_item) > 4 else "size_bytes"
+        label_suffix = spec_item[5] if len(spec_item) > 5 else None
+        custom_source_type = spec_item[6] if len(spec_item) > 6 else row.__tablename__
+
+        raw_title = (
+            getattr(row, "title", None)
+            or getattr(row, "po_number", None)
+            or getattr(row, "expense_number", None)
+            or getattr(row, "reference_number", None)
+            or getattr(row, "reference", None)
+            or getattr(row, file_name_attr, None)
+            or getattr(row, "file_name", None)
+            or "Document"
+        )
+        if label_suffix:
+            title = f"{raw_title} ({label_suffix})"
+        else:
+            title = str(raw_title)
+
+        file_name = (
+            getattr(row, file_name_attr, None)
+            or getattr(row, "file_name", None)
+            or PurePosixPath(path).name
+        )
+        mime_type = getattr(row, mime_type_attr, None) or getattr(row, "mime_type", None) or "application/octet-stream"
+        size_bytes = getattr(row, size_bytes_attr, None) or getattr(row, "size_bytes", None) or getattr(row, "file_size", None) or 0
+
+        results.append(
+            dict(
+                id=uuid.uuid4(),
+                organization_id=row.organization_id,
+                source_type=custom_source_type,
+                source_id=row.id,
+                title=str(title)[:250],
+                category=category,
+                tags=[],
+                storage_path=path,
+                file_name=str(file_name)[:255],
+                mime_type=str(mime_type)[:150],
+                size_bytes=int(size_bytes or 0),
+                owner_id=actor_id
+                or getattr(row, "uploaded_by_id", None)
+                or getattr(row, "created_by_id", None)
+                or getattr(row, "submitted_by_id", None)
+                or getattr(row, "paid_by_id", None),
+                employee_id=getattr(row, "employee_id", None),
+                visibility="PRIVATE",
+                is_active=getattr(row, "is_active", True),
+                index_status="PENDING",
+                extracted_text="",
+                chunks=[],
+            )
+        )
+    return results
 
 
 @event.listens_for(Session, "before_flush")
@@ -86,30 +161,27 @@ def register_sources(session, context):
     connection = session.connection()
     actor = session.info.get("document_actor")
     for row in session.info.pop("document_sources", []):
-        values = source_values(row, actor.id if actor else None)
-        if values is None:
-            continue
-        stmt = insert(D).values(**values)
-        # Metadata changes do not discard user tags or change the uploader/visibility.
-        changed_file = D.storage_path != stmt.excluded.storage_path
-        from sqlalchemy import case
+        for values in source_values(row, actor.id if actor else None):
+            stmt = insert(D).values(**values)
+            changed_file = D.storage_path != stmt.excluded.storage_path
+            from sqlalchemy import case
 
-        connection.execute(
-            stmt.on_conflict_do_update(
-                constraint="uq_library_source",
-                set_={
-                    "storage_path": stmt.excluded.storage_path,
-                    "file_name": stmt.excluded.file_name,
-                    "mime_type": stmt.excluded.mime_type,
-                    "size_bytes": stmt.excluded.size_bytes,
-                    "is_active": stmt.excluded.is_active,
-                    "index_status": case((changed_file, "PENDING"), else_=D.index_status),
-                    "vector_path": case((changed_file, None), else_=D.vector_path),
-                    "extracted_text": case((changed_file, ""), else_=D.extracted_text),
-                    "chunks": case((changed_file, stmt.excluded.chunks), else_=D.chunks),
-                },
+            connection.execute(
+                stmt.on_conflict_do_update(
+                    constraint="uq_library_source",
+                    set_={
+                        "storage_path": stmt.excluded.storage_path,
+                        "file_name": stmt.excluded.file_name,
+                        "mime_type": stmt.excluded.mime_type,
+                        "size_bytes": stmt.excluded.size_bytes,
+                        "is_active": stmt.excluded.is_active,
+                        "index_status": case((changed_file, "PENDING"), else_=D.index_status),
+                        "vector_path": case((changed_file, None), else_=D.vector_path),
+                        "extracted_text": case((changed_file, ""), else_=D.extracted_text),
+                        "chunks": case((changed_file, stmt.excluded.chunks), else_=D.chunks),
+                    },
+                )
             )
-        )
     for row in session.info.pop("document_deleted", []):
         connection.execute(
             D.__table__.update()
@@ -155,14 +227,29 @@ def protect_source_documents(state):
         )
     )
     for model in FILE_MODELS:
+        source_types = [model.__tablename__]
+        if model is OperationalExpense:
+            source_types = ["operational_expenses_invoice", "operational_expenses_receipt"]
         protected = exists(
             select(D.id).where(
-                D.source_type == model.__tablename__,
+                D.source_type.in_(source_types),
                 D.source_id == model.id,
                 visible_scope(actor),
             )
         )
-        exception = model.storage_path.is_(None)
+        if hasattr(model, "storage_path"):
+            exception = model.storage_path.is_(None)
+        elif hasattr(model, "attachment_path"):
+            exception = model.attachment_path.is_(None)
+        elif hasattr(model, "attachment_url"):
+            exception = model.attachment_url.is_(None)
+        elif model is OperationalExpense:
+            exception = and_(model.invoice_path.is_(None), model.receipt_path.is_(None))
+        elif hasattr(model, "receipt_path"):
+            exception = model.receipt_path.is_(None)
+        else:
+            exception = True
+
         if model is AssetMedia:
             exception = or_(exception, model.media_type.in_(["PHOTO", "VIDEO"]))
         if model is ProjectRecord:
@@ -184,7 +271,15 @@ async def backfill_registry(session):
                 select(AuditLog.organization_id, AuditLog.entity_id, AuditLog.actor_user_id)
                 .where(
                     AuditLog.action.in_(
-                        ["employee.document_added", "employee.resume_uploaded", "asset.document_added"]
+                        [
+                            "employee.document_added",
+                            "employee.resume_uploaded",
+                            "asset.document_added",
+                            "procurement.attachment_uploaded",
+                            "operational_expenses.receipt_uploaded",
+                            "operational_expenses.payment_receipt_uploaded",
+                            "field_portal.fuel_delivery_receipt_uploaded",
+                        ]
                     )
                 )
                 .order_by(AuditLog.created_at.desc())
@@ -196,18 +291,19 @@ async def backfill_registry(session):
                 await session.scalars(select(model).execution_options(document_internal=True))
             ).all()
             for row in source_rows:
-                values = source_values(row)
-                if values and not values["owner_id"]:
-                    values["owner_id"] = uploaders.get((row.organization_id, row.id))
-                if values:
-                    await session.execute(
-                        insert(D)
-                        .values(**values)
-                        .on_conflict_do_nothing(constraint="uq_library_source")
-                    )
+                for values in source_values(row):
+                    if not values["owner_id"]:
+                        values["owner_id"] = uploaders.get((row.organization_id, row.id))
+                    if values:
+                        await session.execute(
+                            insert(D)
+                            .values(**values)
+                            .on_conflict_do_nothing(constraint="uq_library_source")
+                        )
         await session.commit()
     except Exception as exc:
         await session.rollback()
         import structlog
 
         structlog.get_logger().warning("backfill_registry_failed", error=str(exc))
+
