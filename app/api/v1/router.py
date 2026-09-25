@@ -18,6 +18,7 @@ from app.api.v1.endpoints import (
     inventory,
     locations,
     maintenance,
+    maintenance_assessments,
     notifications,
     operational_logs,
     operational_expenses,
@@ -103,6 +104,7 @@ router.add_api_route(
     include_in_schema=False,
 )
 router.include_router(maintenance.router)
+router.include_router(maintenance_assessments.router)
 router.include_router(hse.router)
 # Keep the original HSE incident collection paths working for older portal
 # bundles during rollout; new clients should use the explicit /hse routes.

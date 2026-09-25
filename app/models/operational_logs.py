@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import JSON, CheckConstraint, Date, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -91,6 +91,38 @@ class PMJobCard(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, Acto
     supervisor_comments: Mapped[str | None] = mapped_column(Text)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MaintenanceAssessmentReport(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):
+    """Structured fleet and maintenance assessment reports linked to current equipment."""
+    __tablename__ = "maintenance_assessment_reports"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "report_number", name="uq_maintenance_assessment_report_number"),
+        Index("ix_maintenance_assessment_reports_org_period", "organization_id", "reporting_period_start", "reporting_period_end"),
+    )
+
+    report_number: Mapped[str] = mapped_column(String(50))
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    site_location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("locations.id"))
+    reporting_period_start: Mapped[date] = mapped_column(Date)
+    reporting_period_end: Mapped[date] = mapped_column(Date)
+    report_date: Mapped[date] = mapped_column(Date)
+    prepared_by_employee_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"))
+    prepared_by_name: Mapped[str] = mapped_column(String(200))
+    prepared_by_position: Mapped[str | None] = mapped_column(String(150))
+    submitted_to: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(30), default="DRAFT", server_default="DRAFT")
+    executive_summary: Mapped[str | None] = mapped_column(Text)
+    equipment_asset_ids: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
+    equipment_fleet: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    maintenance_assessment: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    preventive_improvements: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    spare_parts_actions: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    manpower_requirements: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    control_documents: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    action_plan: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    maintenance_kpis: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    conclusion: Mapped[str | None] = mapped_column(Text)
 
 
 class BreakdownJobCard(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):

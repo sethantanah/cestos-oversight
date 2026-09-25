@@ -25,6 +25,9 @@ async def test_health() -> None:
     ) as client:
         response = await client.get("/health")
         assert response.json() == {"status": "ok"}
+        versioned_health = await client.get("/api/v1/health")
+        assert versioned_health.status_code == 200
+        assert versioned_health.json() == {"status": "ok"}
         uuid.UUID(response.headers["x-request-id"])
         assert (await client.get("/api/v1/auth/me")).status_code == 401
         error = await client.post("/api/v1/auth/login", json={"password": "secret"})

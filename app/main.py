@@ -104,4 +104,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_exception_handlers(app)
     app.include_router(router)
     app.include_router(health_router)
+    # Frontend connectivity checks use the versioned API base path.
+    app.include_router(health_router, prefix="/api/v1", include_in_schema=False)
     return app

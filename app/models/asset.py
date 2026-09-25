@@ -47,6 +47,22 @@ class AssetStatus(enum.StrEnum):
     LOST = "LOST"
     STOLEN = "STOLEN"
 
+    @classmethod
+    def _missing_(cls, value: object) -> "AssetStatus | None":
+        if isinstance(value, str):
+            val_upper = value.upper().strip()
+            aliases = {
+                "MAINTENANCE": cls.UNDER_MAINTENANCE,
+                "IN_MAINTENANCE": cls.UNDER_MAINTENANCE,
+                "OPERATIONAL": cls.OPERATING,
+                "ACTIVE": cls.OPERATING,
+                "IN_SERVICE": cls.OPERATING,
+                "OUT_OF_ORDER": cls.OUT_OF_SERVICE,
+            }
+            if val_upper in aliases:
+                return aliases[val_upper]
+        return None
+
 
 class MeterType(enum.StrEnum):
     ENGINE_HOURS = "ENGINE_HOURS"

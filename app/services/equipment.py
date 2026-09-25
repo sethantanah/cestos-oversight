@@ -412,7 +412,10 @@ class EquipmentService(ExistingAssetService):
         row = await self.asset(asset_id, True)
         data = body.model_dump(exclude_unset=True)
         if "current_meter_reading" in data:
-            raise ValidationError("Use meter readings or meter reset to preserve history")
+            if data["current_meter_reading"] is None or data["current_meter_reading"] == row.current_meter_reading:
+                data.pop("current_meter_reading")
+            else:
+                raise ValidationError("Use meter readings or meter reset to preserve history")
         if "meter_type" in data and data["meter_type"] != row.meter_type:
             if await self.session.scalar(
                 select(AssetMeterReading.id).where(AssetMeterReading.asset_id == row.id).limit(1)
