@@ -2,9 +2,9 @@
 
 import uuid
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class MaintenanceAssessmentBase(BaseModel):
@@ -13,6 +13,7 @@ class MaintenanceAssessmentBase(BaseModel):
     report_number: str | None = Field(None, min_length=1, max_length=50)
     project_id: uuid.UUID | None = None
     site_location_id: uuid.UUID | None = None
+    project_name_custom: str | None = Field(None, max_length=200)
     reporting_period_start: date
     reporting_period_end: date
     report_date: date
@@ -20,7 +21,7 @@ class MaintenanceAssessmentBase(BaseModel):
     prepared_by_name: str = Field(min_length=1, max_length=200)
     prepared_by_position: str | None = Field(None, max_length=150)
     submitted_to: str | None = Field(None, max_length=200)
-    status: Literal["DRAFT", "IN_PROGRESS", "COMPLETED"] = "DRAFT"
+    status: str = Field("DRAFT", min_length=1, max_length=30)
     executive_summary: str | None = Field(None, max_length=20000)
     equipment_asset_ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
     equipment_fleet: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
@@ -32,6 +33,13 @@ class MaintenanceAssessmentBase(BaseModel):
     action_plan: list[dict[str, Any]] = Field(default_factory=list, max_length=300)
     maintenance_kpis: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
     conclusion: str | None = Field(None, max_length=20000)
+
+    @field_validator("report_number", mode="before")
+    @classmethod
+    def normalize_report_number(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def validate_period(self):
@@ -50,6 +58,7 @@ class MaintenanceAssessmentUpdate(BaseModel):
     report_number: str | None = Field(None, min_length=1, max_length=50)
     project_id: uuid.UUID | None = None
     site_location_id: uuid.UUID | None = None
+    project_name_custom: str | None = Field(None, max_length=200)
     reporting_period_start: date | None = None
     reporting_period_end: date | None = None
     report_date: date | None = None
@@ -57,7 +66,7 @@ class MaintenanceAssessmentUpdate(BaseModel):
     prepared_by_name: str | None = Field(None, min_length=1, max_length=200)
     prepared_by_position: str | None = Field(None, max_length=150)
     submitted_to: str | None = Field(None, max_length=200)
-    status: Literal["DRAFT", "IN_PROGRESS", "COMPLETED"] | None = None
+    status: str | None = Field(None, min_length=1, max_length=30)
     executive_summary: str | None = Field(None, max_length=20000)
     equipment_asset_ids: list[uuid.UUID] | None = Field(None, max_length=500)
     equipment_fleet: list[dict[str, Any]] | None = Field(None, max_length=200)
@@ -69,6 +78,13 @@ class MaintenanceAssessmentUpdate(BaseModel):
     action_plan: list[dict[str, Any]] | None = Field(None, max_length=300)
     maintenance_kpis: list[dict[str, Any]] | None = Field(None, max_length=200)
     conclusion: str | None = Field(None, max_length=20000)
+
+    @field_validator("report_number", mode="before")
+    @classmethod
+    def normalize_report_number(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class MaintenanceAssessmentRead(MaintenanceAssessmentBase):

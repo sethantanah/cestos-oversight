@@ -104,6 +104,7 @@ class MaintenanceAssessmentReport(UUIDMixin, OrganizationMixin, TimestampMixin, 
     report_number: Mapped[str] = mapped_column(String(50))
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
     site_location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("locations.id"))
+    project_name_custom: Mapped[str | None] = mapped_column(String(200))
     reporting_period_start: Mapped[date] = mapped_column(Date)
     reporting_period_end: Mapped[date] = mapped_column(Date)
     report_date: Mapped[date] = mapped_column(Date)
@@ -123,6 +124,64 @@ class MaintenanceAssessmentReport(UUIDMixin, OrganizationMixin, TimestampMixin, 
     action_plan: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     maintenance_kpis: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     conclusion: Mapped[str | None] = mapped_column(Text)
+
+
+class ActionTracker(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):
+    """Operational findings and follow-up actions for a project or site."""
+    __tablename__ = "action_trackers"
+    __table_args__ = (
+        Index("ix_action_trackers_org_project_date", "organization_id", "project_id", "action_date"),
+    )
+
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    action_date: Mapped[date] = mapped_column(Date)
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    equipment_area: Mapped[str] = mapped_column(String(300))
+    issue_finding: Mapped[str] = mapped_column(Text)
+    action_taken: Mapped[str | None] = mapped_column(Text)
+    parts_required: Mapped[str | None] = mapped_column(Text)
+    responsible_employee_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    responsible_name: Mapped[str | None] = mapped_column(String(200))
+    priority: Mapped[str] = mapped_column(String(30), default="MEDIUM", server_default="MEDIUM")
+    status: Mapped[str] = mapped_column(String(30), default="OPEN", server_default="OPEN")
+    completion_date: Mapped[date | None] = mapped_column(Date)
+    remarks: Mapped[str | None] = mapped_column(Text)
+
+
+class PMTracker(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):
+    """Planned and completed preventive maintenance tracker entries."""
+    __tablename__ = "pm_trackers"
+    __table_args__ = (Index("ix_pm_trackers_org_project_due", "organization_id", "project_id", "due_date"),)
+
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    equipment: Mapped[str] = mapped_column(String(300))
+    service_type: Mapped[str] = mapped_column(String(200))
+    due_date: Mapped[date] = mapped_column(Date)
+    planned_actual: Mapped[str] = mapped_column(String(20), default="PLANNED", server_default="PLANNED")
+    pm_completed: Mapped[bool] = mapped_column(default=False, server_default="false")
+    defects_found: Mapped[str | None] = mapped_column(Text)
+    parts_required: Mapped[str | None] = mapped_column(Text)
+    technician_employee_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    technician_name: Mapped[str | None] = mapped_column(String(200))
+    remarks: Mapped[str | None] = mapped_column(Text)
+
+
+class EquipmentRegister(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):
+    """Project equipment register with current condition and required actions."""
+    __tablename__ = "equipment_register_entries"
+    __table_args__ = (Index("ix_equipment_register_org_project", "organization_id", "project_id"),)
+
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    equipment: Mapped[str] = mapped_column(String(300))
+    unit_number: Mapped[str | None] = mapped_column(String(100))
+    equipment_type: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(100), default="Operational / Monitoring", server_default="Operational / Monitoring")
+    open_defects: Mapped[str | None] = mapped_column(Text)
+    action_required: Mapped[str | None] = mapped_column(Text)
+    priority: Mapped[str] = mapped_column(String(30), default="MEDIUM", server_default="MEDIUM")
+    remarks: Mapped[str | None] = mapped_column(Text)
 
 
 class BreakdownJobCard(UUIDMixin, OrganizationMixin, TimestampMixin, ArchiveMixin, ActorMixin, Base):

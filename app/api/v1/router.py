@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     assets,
+    action_tracker,
     auth,
     clients,
     commercial,
@@ -11,6 +12,7 @@ from app.api.v1.endpoints import (
     email,
     employees,
     equipment,
+    equipment_register,
     field_portal,
     hr,
     hse,
@@ -23,6 +25,7 @@ from app.api.v1.endpoints import (
     operational_logs,
     operational_expenses,
     pm_job_cards,
+    pm_tracker,
     operations,
     procurement,
     project_reports,
@@ -105,6 +108,9 @@ router.add_api_route(
 )
 router.include_router(maintenance.router)
 router.include_router(maintenance_assessments.router)
+router.include_router(action_tracker.router)
+router.include_router(pm_tracker.router)
+router.include_router(equipment_register.router)
 router.include_router(hse.router)
 # Keep the original HSE incident collection paths working for older portal
 # bundles during rollout; new clients should use the explicit /hse routes.

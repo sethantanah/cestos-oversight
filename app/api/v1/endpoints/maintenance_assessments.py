@@ -152,6 +152,8 @@ async def update_report(
     if created_at < datetime.now(timezone.utc) - timedelta(days=10):
         raise HTTPException(409, "Assessment reports can only be edited within 10 days of creation")
     changes = prepare_json(body.model_dump(exclude_unset=True))
+    if changes.get("report_number") is None:
+        changes.pop("report_number", None)
     combined = {key: changes.get(key, getattr(row, key)) for key in (
         "project_id", "site_location_id", "prepared_by_employee_id", "equipment_asset_ids"
     )}
