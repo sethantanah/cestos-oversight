@@ -6,6 +6,7 @@ from app.api.v1.endpoints import (
     auth,
     clients,
     commercial,
+    command_center,
     control_tower,
     documents,
     drilling,
@@ -99,6 +100,7 @@ router.include_router(intelligence.router)
 router.include_router(email.router)
 router.include_router(drilling.router)
 router.include_router(commercial.router)
+router.include_router(command_center.router)
 # Compatibility route for portal bundles that still request the old path.
 router.add_api_route(
     "/cost-subledger",

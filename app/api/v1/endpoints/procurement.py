@@ -359,8 +359,16 @@ async def download_purchase_order_attachment(
     po = await procurement_service.get_purchase_order(session, current_user.organization_id, po_id)
     if not po or not po.attachment_path:
         raise HTTPException(status_code=404, detail="Purchase order attachment not found")
-    if not current_user.is_superuser and str(current_user.portal_type or "").upper() not in {"FINANCE", "EXECUTIVE"} and po.created_by_id != current_user.id:
+    privileged = current_user.is_superuser or str(current_user.portal_type or "").upper() in {"FINANCE", "EXECUTIVE"}
+    field_supervisor = not privileged and await is_field_supervisor(session, current_user)
+    if not privileged and not field_supervisor and po.created_by_id != current_user.id:
         raise HTTPException(status_code=404, detail="Purchase order attachment not found")
+    if field_supervisor:
+        if po.project_id:
+            from app.services.field_equipment import require_project
+            await require_project(session, current_user, po.project_id)
+        elif po.created_by_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Purchase order attachment not found")
     try:
         path = await run_in_threadpool(storage.resolve, po.attachment_path)
     except (OSError, ValueError) as err:
@@ -371,7 +379,6 @@ async def download_purchase_order_attachment(
         media_type=po.attachment_mime_type or "application/octet-stream",
         content_disposition_type="inline" if inline else "attachment",
     )
-
 
 @router.post("/purchase-orders/{po_id}/receive", response_model=PurchaseOrderResponse)
 async def receive_goods(
