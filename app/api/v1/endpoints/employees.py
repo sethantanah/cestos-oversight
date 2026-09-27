@@ -1329,19 +1329,18 @@ async def _save_employee_timesheet(
         raise NotFoundError("Employee not found in this organization")
     if str(actor.portal_type or "").upper() == "FIELD_ADMIN":
         scope_project_id = body.scope_project_id or body.project_id
-        if not scope_project_id:
-            raise ValidationError("Select a project before reporting employee hours")
-        from app.services.field_equipment import assigned_project_ids
-        if not await session.scalar(assigned_project_ids(actor).where(Project.id == scope_project_id)):
-            raise ForbiddenError("You can only report timesheets for a project assigned to you")
-        assignment_id = await session.scalar(select(EmployeeAssignment.id).where(
-            EmployeeAssignment.organization_id == actor.organization_id,
-            EmployeeAssignment.employee_id == body.employee_id,
-            EmployeeAssignment.project_id == scope_project_id,
-            EmployeeAssignment.status == "ACTIVE",
-        )) if body.employee_id else None
-        if body.employee_id and not assignment_id:
-            raise ForbiddenError("You can only report hours for an employee actively assigned to the selected project")
+        if scope_project_id:
+            from app.services.field_equipment import assigned_project_ids
+            if not await session.scalar(assigned_project_ids(actor).where(Project.id == scope_project_id)):
+                raise ForbiddenError("You can only report timesheets for a project assigned to you")
+            assignment_id = await session.scalar(select(EmployeeAssignment.id).where(
+                EmployeeAssignment.organization_id == actor.organization_id,
+                EmployeeAssignment.employee_id == body.employee_id,
+                EmployeeAssignment.project_id == scope_project_id,
+                EmployeeAssignment.status == "ACTIVE",
+            )) if body.employee_id else None
+            if body.employee_id and not assignment_id:
+                raise ForbiddenError("You can only report hours for an employee actively assigned to the selected project")
 
     row = None
     if timesheet_id:
