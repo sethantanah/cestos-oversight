@@ -1261,6 +1261,9 @@ async def _list_employee_timesheets(
     if str(actor.portal_type or "").upper() == "FIELD_ADMIN":
         if not project_id:
             raise ValidationError("Select a project to view its timesheets")
+        from app.services.field_equipment import assigned_project_ids
+        if not await session.scalar(assigned_project_ids(actor).where(Project.id == project_id)):
+            raise ForbiddenError("You can only view timesheets for a project assigned to you")
         query = query.where(
             (EmployeeTimesheet.scope_project_id == project_id)
             | EmployeeTimesheet.employee_id.in_(select(EmployeeAssignment.employee_id).where(
@@ -1278,7 +1281,7 @@ async def _list_employee_timesheets(
         )
         .order_by(EmployeeTimesheet.site_name, EmployeeTimesheet.employee_name, EmployeeTimesheet.employee_id)
     )).all())
-    employee_ids = {row.employee_id for row in rows}
+    employee_ids = {row.employee_id for row in rows if row.employee_id}
     employees_by_id = {}
     if employee_ids:
         employees_by_id = {
@@ -1328,6 +1331,9 @@ async def _save_employee_timesheet(
         scope_project_id = body.scope_project_id or body.project_id
         if not scope_project_id:
             raise ValidationError("Select a project before reporting employee hours")
+        from app.services.field_equipment import assigned_project_ids
+        if not await session.scalar(assigned_project_ids(actor).where(Project.id == scope_project_id)):
+            raise ForbiddenError("You can only report timesheets for a project assigned to you")
         assignment_id = await session.scalar(select(EmployeeAssignment.id).where(
             EmployeeAssignment.organization_id == actor.organization_id,
             EmployeeAssignment.employee_id == body.employee_id,
@@ -1367,7 +1373,7 @@ async def _save_employee_timesheet(
         if body.employee_id:
             existing_query = existing_query.where(EmployeeTimesheet.employee_id == body.employee_id)
         else:
-            existing_query = existing_query.where(EmployeeTimesheet.employee_id.is_(None), EmployeeTimesheet.employee_name.ilike(employee_name))
+            existing_query = existing_query.where(EmployeeTimesheet.employee_id.is_(None), func.lower(EmployeeTimesheet.employee_name) == employee_name.lower())
         existing_id = await session.scalar(existing_query)
         if existing_id:
             raise ConflictError("A timesheet already exists for this employee and month")

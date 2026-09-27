@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, Date, ForeignKey, Index, Numeric, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -14,6 +14,8 @@ class EmployeeTimesheet(UUIDMixin, TimestampMixin, ActorMixin, Base):
     __table_args__ = (
         Index("ix_employee_timesheets_org_period", "organization_id", "period_start"),
         Index("ix_employee_timesheets_org_employee_period", "organization_id", "employee_id", "period_start"),
+        Index("uq_employee_timesheet_employee_period", "organization_id", "employee_id", "period_start", unique=True, postgresql_where=text("employee_id IS NOT NULL")),
+        Index("uq_employee_timesheet_custom_name_period", "organization_id", text("lower(employee_name)"), "period_start", unique=True, postgresql_where=text("employee_id IS NULL AND employee_name IS NOT NULL")),
     )
 
     organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
