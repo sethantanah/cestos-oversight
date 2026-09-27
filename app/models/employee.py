@@ -45,6 +45,7 @@ class EmploymentStatus(enum.StrEnum):
     ACTIVE = "ACTIVE"
     ON_LEAVE = "ON_LEAVE"
     OFF_ROTATION = "OFF_ROTATION"
+    OUT_OF_CONTRACT = "OUT_OF_CONTRACT"
     SUSPENDED = "SUSPENDED"
     EXITED = "EXITED"
     RESIGNED = "RESIGNED"
