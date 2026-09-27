@@ -1654,9 +1654,13 @@ class EmployeeService:
         )
         by_department: dict[str, int] = {}
         by_position: dict[str, int] = {}
+        by_employment_status: dict[str, int] = {}
         for employee in employees:
             dept = employee.department or "Unassigned"
             by_department[dept] = by_department.get(dept, 0) + 1
+            st_raw = employee.employment_status.value if hasattr(employee.employment_status, 'value') else str(employee.employment_status or '')
+            st_name = st_raw.replace('_', ' ').title() if st_raw else 'Unknown'
+            by_employment_status[st_name] = by_employment_status.get(st_name, 0) + 1
         positions = (
             (
                 await self.session.scalars(
@@ -1767,6 +1771,7 @@ class EmployeeService:
             employees_by_department=by_department,
             employees_by_position=by_position,
             employees_by_project=by_project,
+            employees_by_employment_status=by_employment_status,
             expiring_documents=expiring_documents,
             expired_documents=expired_documents,
             expiring_licenses=expiring_licenses,
