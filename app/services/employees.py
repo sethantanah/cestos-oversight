@@ -670,7 +670,7 @@ class EmployeeService:
             await self.session.flush()
             from app.services.hr import link_account
 
-            await link_account(self.session, self.actor, employee)
+            await link_account(self.session, self.actor, employee, send_setup_email=False)
             record_audit(
                 self.session,
                 organization_id=self.actor.organization_id,
@@ -736,16 +736,16 @@ class EmployeeService:
             employee.updated_at = datetime.now(UTC)
             await self.session.flush()
 
-            # Synchronize profile email with user account & trigger password reset email
-            from app.services.hr import invalidate_account, link_account
+            # Keep the linked account email aligned without automatically
+            # revoking access or sending a setup/reset email from profile edits.
+            from app.services.hr import link_account
             if employee.user_id:
                 if email_changed:
                     user = await self.session.get(User, employee.user_id)
                     if user:
                         user.email = employee.work_email
-                        await invalidate_account(self.session, user)
             else:
-                await link_account(self.session, self.actor, employee)
+                await link_account(self.session, self.actor, employee, send_setup_email=False)
 
             record_audit(
                 self.session,

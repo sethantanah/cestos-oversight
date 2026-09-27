@@ -30,7 +30,17 @@ async def test_account_setup_self_service_and_reset(
     async with session_factory() as session:
         user = await session.scalar(select(User).where(User.email == "new.person@example.com"))
         assert user.setup_required
+        assert not (await session.scalars(select(EmailDelivery).where(
+            EmailDelivery.recipient_id == user.id, EmailDelivery.kind == "SETUP"
+        ))).all()
         user_id = user.id
+    reset_response = await client.post(
+        f"/api/v1/hr/employees/{employee['id']}/account/reset", headers=headers
+    )
+    assert reset_response.status_code == 200, reset_response.text
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.email == "new.person@example.com"))
+        assert user.setup_required
         settings = make_settings()
         settings.smtp_host = "smtp.test"
         settings.smtp_from = "hr@example.com"
@@ -60,6 +70,22 @@ async def test_account_setup_self_service_and_reset(
     assert (
         await client.get(f"/api/v1/hr/employees/{employee['id']}/salaries", headers=own)
     ).status_code == 403
+    profile_update = await client.patch(
+        f"/api/v1/employees/{employee['id']}",
+        json={"work_email": "profile.edited@example.com"},
+        headers=headers,
+    )
+    assert profile_update.status_code == 200, profile_update.text
+    assert (await client.get("/api/v1/hr/me", headers=own)).status_code == 200
+    async with session_factory() as session:
+        updated_user = await session.get(User, user_id)
+        assert updated_user.email == "profile.edited@example.com"
+        pending_setup = await session.scalar(select(EmailDelivery.id).where(
+            EmailDelivery.recipient_id == user_id,
+            EmailDelivery.kind == "SETUP",
+            EmailDelivery.status == "PENDING",
+        ))
+        assert pending_setup is None
     response = await client.post(
         f"/api/v1/hr/employees/{employee['id']}/account/reset", headers=headers
     )
@@ -198,7 +224,11 @@ async def test_contract_ownership_and_smtp_retry(client, identities, session_fac
             f"/api/v1/employee-documents/{own_document}", json={"title": "Tamper"}, headers=own
         )
     ).status_code == 403
-    await make_employee(client, headers, work_email="mail.retry@example.com")
+    employee = await make_employee(client, headers, work_email="mail.retry@example.com")
+    reset_response = await client.post(
+        f"/api/v1/hr/employees/{employee['id']}/account/reset", headers=headers
+    )
+    assert reset_response.status_code == 200, reset_response.text
     settings = make_settings()
     settings.smtp_host = "smtp.test"
     settings.smtp_from = "hr@example.com"

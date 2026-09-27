@@ -30,7 +30,13 @@ async def employee_in_org(
     return employee
 
 
-async def link_account(session: AsyncSession, actor: User, employee: Employee) -> None:
+async def link_account(
+    session: AsyncSession,
+    actor: User,
+    employee: Employee,
+    *,
+    send_setup_email: bool = True,
+) -> None:
     raw_email = employee.work_email or employee.personal_email
     if not raw_email:
         return
@@ -74,16 +80,18 @@ async def link_account(session: AsyncSession, actor: User, employee: Employee) -
     employee.user_id = user.id
     employee.updated_at = datetime.now(UTC)
 
-    # Queue password reset / setup email for the associated user
-    session.add(
-        EmailDelivery(
-            organization_id=actor.organization_id,
-            recipient_id=user.id,
-            kind="SETUP",
-            message="Set up your Cestos account password",
-            next_attempt_at=datetime.now(UTC),
+    if send_setup_email:
+        # Explicit account linking can send a setup message. Profile saves pass
+        # send_setup_email=False so routine employee edits never email staff.
+        session.add(
+            EmailDelivery(
+                organization_id=actor.organization_id,
+                recipient_id=user.id,
+                kind="SETUP",
+                message="Set up your Cestos account password",
+                next_attempt_at=datetime.now(UTC),
+            )
         )
-    )
 
     record_audit(
         session,

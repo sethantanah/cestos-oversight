@@ -4,14 +4,15 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import get_current_active_user, request_storage, require_permission, scoped_roles
-from app.core.exceptions import ForbiddenError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.storage import LocalStorage
 from app.db.session import get_session
-from app.models import Employee, User
+from app.models import Employee, EmployeeAssignment, EmployeeTimesheet, EmployeeTimesheetDay, User
 from app.models.employee import (
     AvailabilityStatus,
     DocumentType,
@@ -100,6 +101,8 @@ from app.services.workforce import (
     TimeLogService,
     LeaveRequestService,
 )
+from app.schemas.timesheet import EmployeeTimesheetWrite
+from app.services.audit import record_audit, request_metadata
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 assignments_router = APIRouter(prefix="/employee-assignments", tags=["assignments"])
@@ -119,6 +122,26 @@ rotations_router = APIRouter(prefix="/rotations", tags=["rotations"])
 authorizations_router = APIRouter(prefix="/employee-asset-authorizations", tags=["authorizations"])
 departments_router = APIRouter(prefix="/departments", tags=["departments"])
 positions_router = APIRouter(prefix="/positions", tags=["positions"])
+
+
+def _timesheet_permissions(actor: User) -> set[str]:
+    return {permission.code for role in scoped_roles(actor) for permission in role.permissions}
+
+
+async def timesheet_reader(actor: User = Depends(get_current_active_user)) -> User:
+    allowed_portals = {"HR", "FIELD_ADMIN", "EXECUTIVE"}
+    if not actor.is_superuser and str(actor.portal_type or "").upper() not in allowed_portals:
+        if not _timesheet_permissions(actor).intersection({"employees.read_basic", "employees.time_log.read"}):
+            raise ForbiddenError("You do not have access to employee timesheets")
+    return actor
+
+
+async def timesheet_reporter(actor: User = Depends(get_current_active_user)) -> User:
+    allowed_portals = {"HR", "FIELD_ADMIN"}
+    if not actor.is_superuser and str(actor.portal_type or "").upper() not in allowed_portals:
+        if "employees.time_log.create" not in _timesheet_permissions(actor):
+            raise ForbiddenError("You do not have permission to report employee timesheets")
+    return actor
 
 
 async def employee_document_reader(
@@ -239,6 +262,16 @@ async def workforce_dashboard(
     session: AsyncSession = Depends(get_session),
 ) -> WorkforceDashboard:
     return await EmployeeService(session, actor).dashboard()
+
+
+@router.get("/timesheets")
+async def list_employee_timesheets(
+    period: str | None = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    project_id: uuid.UUID | None = None,
+    actor: User = Depends(timesheet_reader),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await _list_employee_timesheets(period, project_id, actor, session)
 
 
 @router.get("/{employee_id}", response_model=EmployeeRead)
@@ -1177,6 +1210,192 @@ async def create_time_log(
     session: AsyncSession = Depends(get_session),
 ) -> TimeLogRead:
     return await TimeLogService(session, actor).create(employee_id, body, request)
+
+
+def _timesheet_period(period: str | None) -> date:
+    if period is None:
+        return date.today().replace(day=1)
+    try:
+        return date.fromisoformat(f"{period}-01")
+    except ValueError as exc:
+        raise ValidationError("Period must use YYYY-MM format") from exc
+
+
+def _timesheet_read(row: EmployeeTimesheet, employee: Employee) -> dict:
+    daily_hours = {day.work_date.day: float(day.hours) for day in row.days}
+    return {
+        "id": str(row.id),
+        "employee_id": str(row.employee_id),
+        "employee_name": " ".join(part for part in (employee.first_name, employee.middle_name, employee.last_name) if part),
+        "employee_number": employee.employee_number,
+        "period": row.period_start.strftime("%Y-%m"),
+        "period_start": row.period_start.isoformat(),
+        "site_name": row.site_name,
+        "source_file": row.source_file,
+        "daily_hours": daily_hours,
+        "total_hours": round(sum(daily_hours.values()), 2),
+        "days_worked": sum(1 for hours in daily_hours.values() if hours > 0),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+async def _list_employee_timesheets(
+    period: str | None,
+    project_id: uuid.UUID | None = None,
+    actor: User = Depends(timesheet_reader),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    selected_period = _timesheet_period(period)
+    if period is None:
+        latest_period = await session.scalar(
+            select(func.max(EmployeeTimesheet.period_start)).where(
+                EmployeeTimesheet.organization_id == actor.organization_id
+            )
+        )
+        if latest_period:
+            selected_period = latest_period
+    query = select(EmployeeTimesheet)
+    if str(actor.portal_type or "").upper() == "FIELD_ADMIN":
+        if not project_id:
+            raise ValidationError("Select a project to view its timesheets")
+        query = query.where(EmployeeTimesheet.employee_id.in_(
+            select(EmployeeAssignment.employee_id).where(
+                EmployeeAssignment.organization_id == actor.organization_id,
+                EmployeeAssignment.project_id == project_id,
+                EmployeeAssignment.status == "ACTIVE",
+            )
+        ))
+    rows = list((await session.scalars(
+        query
+        .options(selectinload(EmployeeTimesheet.days))
+        .where(
+            EmployeeTimesheet.organization_id == actor.organization_id,
+            EmployeeTimesheet.period_start == selected_period,
+        )
+        .order_by(EmployeeTimesheet.site_name, EmployeeTimesheet.employee_id)
+    )).all())
+    employee_ids = {row.employee_id for row in rows}
+    employees_by_id = {}
+    if employee_ids:
+        employees_by_id = {
+            employee.id: employee
+            for employee in (await session.scalars(select(Employee).where(
+                Employee.organization_id == actor.organization_id,
+                Employee.id.in_(employee_ids),
+            ))).all()
+        }
+    return {
+        "period": selected_period.strftime("%Y-%m"),
+        "items": [_timesheet_read(row, employees_by_id[row.employee_id]) for row in rows if row.employee_id in employees_by_id],
+    }
+
+
+async def _save_employee_timesheet(
+    body: EmployeeTimesheetWrite,
+    request: Request,
+    actor: User,
+    session: AsyncSession,
+    timesheet_id: uuid.UUID | None = None,
+) -> dict:
+    employee = await session.scalar(select(Employee).where(
+        Employee.id == body.employee_id,
+        Employee.organization_id == actor.organization_id,
+    ))
+    if not employee:
+        raise NotFoundError("Employee not found in this organization")
+    if str(actor.portal_type or "").upper() == "FIELD_ADMIN":
+        if not body.project_id:
+            raise ValidationError("Select a project before reporting employee hours")
+        assignment_id = await session.scalar(select(EmployeeAssignment.id).where(
+            EmployeeAssignment.organization_id == actor.organization_id,
+            EmployeeAssignment.employee_id == body.employee_id,
+            EmployeeAssignment.project_id == body.project_id,
+            EmployeeAssignment.status == "ACTIVE",
+        ))
+        if not assignment_id:
+            raise ForbiddenError("You can only report hours for an employee actively assigned to the selected project")
+
+    row = None
+    if timesheet_id:
+        row = await session.scalar(
+            select(EmployeeTimesheet)
+            .options(selectinload(EmployeeTimesheet.days))
+            .where(EmployeeTimesheet.id == timesheet_id, EmployeeTimesheet.organization_id == actor.organization_id)
+        )
+        if not row:
+            raise NotFoundError("Timesheet not found")
+        if row.employee_id != body.employee_id or row.period_start != body.period_start:
+            raise ValidationError("Employee and period cannot be changed when editing a timesheet")
+        old_total = sum(float(day.hours) for day in row.days)
+        row.site_name = body.site_name.strip() if body.site_name and body.site_name.strip() else None
+        row.updated_by_id = actor.id
+        row.days.clear()
+        await session.flush()
+        action = "employee.timesheet.updated"
+        old_values = {"total_hours": old_total}
+    else:
+        existing_id = await session.scalar(select(EmployeeTimesheet.id).where(
+            EmployeeTimesheet.organization_id == actor.organization_id,
+            EmployeeTimesheet.employee_id == body.employee_id,
+            EmployeeTimesheet.period_start == body.period_start,
+        ))
+        if existing_id:
+            raise ConflictError("A timesheet already exists for this employee and month")
+        row = EmployeeTimesheet(
+            organization_id=actor.organization_id,
+            employee_id=body.employee_id,
+            period_start=body.period_start,
+            site_name=body.site_name.strip() if body.site_name and body.site_name.strip() else None,
+            created_by_id=actor.id,
+            updated_by_id=actor.id,
+        )
+        session.add(row)
+        action = "employee.timesheet.created"
+        old_values = None
+
+    for entry in body.entries:
+        row.days.append(EmployeeTimesheetDay(
+            organization_id=actor.organization_id,
+            work_date=entry.work_date,
+            hours=entry.hours,
+        ))
+    await session.flush()
+    record_audit(
+        session,
+        organization_id=actor.organization_id,
+        actor_user_id=actor.id,
+        action=action,
+        entity_type="employee_timesheet",
+        entity_id=row.id,
+        old_values=old_values,
+        new_values={"employee_id": str(body.employee_id), "period": body.period_start.strftime("%Y-%m"),
+                    "site_name": row.site_name, "total_hours": round(sum(float(entry.hours) for entry in body.entries), 2)},
+        **request_metadata(request),
+    )
+    await session.commit()
+    return _timesheet_read(row, employee)
+
+
+@router.post("/timesheets", status_code=201)
+async def create_employee_timesheet(
+    body: EmployeeTimesheetWrite,
+    request: Request,
+    actor: User = Depends(timesheet_reporter),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await _save_employee_timesheet(body, request, actor, session)
+
+
+@router.put("/timesheets/{timesheet_id}")
+async def update_employee_timesheet(
+    timesheet_id: uuid.UUID,
+    body: EmployeeTimesheetWrite,
+    request: Request,
+    actor: User = Depends(timesheet_reporter),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await _save_employee_timesheet(body, request, actor, session, timesheet_id)
 
 
 @router.get("/{employee_id}/time-logs", response_model=list[TimeLogRead])

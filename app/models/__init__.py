@@ -24,6 +24,7 @@ from app.models.asset_records import (
 from app.models.audit_log import AuditLog
 from app.models.business_counter import BusinessCounter
 from app.models.client import Client
+from app.models.timesheet import EmployeeTimesheet, EmployeeTimesheetDay
 from app.models.employee import (
     AssignmentStatus,
     AssignmentType,
