@@ -1068,6 +1068,7 @@ class WorkforceDashboard(ORMModel):
     employees_by_position: dict[str, int]
     employees_by_project: dict[str, int]
     employees_by_employment_status: dict[str, int] = Field(default_factory=dict)
+    employees_by_project_and_status: dict[str, dict[str, int]] = Field(default_factory=dict)
     expiring_documents: int
     expired_documents: int
     expiring_licenses: int

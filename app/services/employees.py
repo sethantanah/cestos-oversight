@@ -1692,9 +1692,17 @@ class EmployeeService:
             ).all():
                 project_names[project.id] = project.name
         by_project: dict[str, int] = {}
+        by_project_and_status: dict[str, dict[str, int]] = {}
         for assignment in active_assignments:
             key = project_names.get(assignment.project_id, "Unknown")
             by_project[key] = by_project.get(key, 0) + 1
+            emp = next((e for e in employees if e.id == assignment.employee_id), None)
+            if emp:
+                st_raw = emp.employment_status.value if hasattr(emp.employment_status, 'value') else str(emp.employment_status or '')
+                st_name = st_raw.replace('_', ' ').title() if st_raw else 'Active'
+                if key not in by_project_and_status:
+                    by_project_and_status[key] = {}
+                by_project_and_status[key][st_name] = by_project_and_status[key].get(st_name, 0) + 1
         today = date.today()
         warn = today + timedelta(days=EXPIRY_WARNING_DAYS)
         documents = (
@@ -1772,6 +1780,7 @@ class EmployeeService:
             employees_by_position=by_position,
             employees_by_project=by_project,
             employees_by_employment_status=by_employment_status,
+            employees_by_project_and_status=by_project_and_status,
             expiring_documents=expiring_documents,
             expired_documents=expired_documents,
             expiring_licenses=expiring_licenses,
