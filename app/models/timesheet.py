@@ -21,6 +21,7 @@ class EmployeeTimesheet(UUIDMixin, TimestampMixin, ActorMixin, Base):
     employee_name: Mapped[str | None] = mapped_column(String(200))
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
     project_name: Mapped[str | None] = mapped_column(String(200))
+    scope_project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     site_name: Mapped[str | None] = mapped_column(String(200))
     source_file: Mapped[str | None] = mapped_column(String(255))

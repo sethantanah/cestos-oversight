@@ -12,7 +12,7 @@ from app.core.dependencies import get_current_active_user, request_storage, requ
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.storage import LocalStorage
 from app.db.session import get_session
-from app.models import Employee, EmployeeAssignment, EmployeeTimesheet, EmployeeTimesheetDay, User
+from app.models import Employee, EmployeeAssignment, EmployeeTimesheet, EmployeeTimesheetDay, Project, User
 from app.models.employee import (
     AvailabilityStatus,
     DocumentType,
@@ -1221,13 +1221,15 @@ def _timesheet_period(period: str | None) -> date:
         raise ValidationError("Period must use YYYY-MM format") from exc
 
 
-def _timesheet_read(row: EmployeeTimesheet, employee: Employee) -> dict:
+def _timesheet_read(row: EmployeeTimesheet, employee: Employee | None) -> dict:
     daily_hours = {day.work_date.day: float(day.hours) for day in row.days}
     return {
         "id": str(row.id),
-        "employee_id": str(row.employee_id),
-        "employee_name": " ".join(part for part in (employee.first_name, employee.middle_name, employee.last_name) if part),
-        "employee_number": employee.employee_number,
+        "employee_id": str(row.employee_id) if row.employee_id else None,
+        "employee_name": " ".join(part for part in (employee.first_name, employee.middle_name, employee.last_name) if part) if employee else row.employee_name or "Unmatched employee",
+        "employee_number": employee.employee_number if employee else None,
+        "project_id": str(row.project_id) if row.project_id else None,
+        "project_name": row.project_name,
         "period": row.period_start.strftime("%Y-%m"),
         "period_start": row.period_start.isoformat(),
         "site_name": row.site_name,
@@ -1259,13 +1261,14 @@ async def _list_employee_timesheets(
     if str(actor.portal_type or "").upper() == "FIELD_ADMIN":
         if not project_id:
             raise ValidationError("Select a project to view its timesheets")
-        query = query.where(EmployeeTimesheet.employee_id.in_(
-            select(EmployeeAssignment.employee_id).where(
+        query = query.where(
+            (EmployeeTimesheet.scope_project_id == project_id)
+            | EmployeeTimesheet.employee_id.in_(select(EmployeeAssignment.employee_id).where(
                 EmployeeAssignment.organization_id == actor.organization_id,
                 EmployeeAssignment.project_id == project_id,
                 EmployeeAssignment.status == "ACTIVE",
-            )
-        ))
+            ))
+        )
     rows = list((await session.scalars(
         query
         .options(selectinload(EmployeeTimesheet.days))
@@ -1273,7 +1276,7 @@ async def _list_employee_timesheets(
             EmployeeTimesheet.organization_id == actor.organization_id,
             EmployeeTimesheet.period_start == selected_period,
         )
-        .order_by(EmployeeTimesheet.site_name, EmployeeTimesheet.employee_id)
+        .order_by(EmployeeTimesheet.site_name, EmployeeTimesheet.employee_name, EmployeeTimesheet.employee_id)
     )).all())
     employee_ids = {row.employee_id for row in rows}
     employees_by_id = {}
@@ -1287,7 +1290,7 @@ async def _list_employee_timesheets(
         }
     return {
         "period": selected_period.strftime("%Y-%m"),
-        "items": [_timesheet_read(row, employees_by_id[row.employee_id]) for row in rows if row.employee_id in employees_by_id],
+        "items": [_timesheet_read(row, employees_by_id.get(row.employee_id) if row.employee_id else None) for row in rows],
     }
 
 
@@ -1301,19 +1304,37 @@ async def _save_employee_timesheet(
     employee = await session.scalar(select(Employee).where(
         Employee.id == body.employee_id,
         Employee.organization_id == actor.organization_id,
-    ))
-    if not employee:
+    )) if body.employee_id else None
+    employee_name = (body.employee_name or "").strip()
+    if not employee and not employee_name:
+        raise ValidationError("Enter the employee name from the source timesheet or select a registered employee")
+    if body.project_id:
+        project_exists = await session.scalar(select(Project.id).where(
+            Project.id == body.project_id,
+            Project.organization_id == actor.organization_id,
+        ))
+        if not project_exists:
+            raise NotFoundError("Project not found in this organization")
+    if body.scope_project_id:
+        scope_exists = await session.scalar(select(Project.id).where(
+            Project.id == body.scope_project_id,
+            Project.organization_id == actor.organization_id,
+        ))
+        if not scope_exists:
+            raise NotFoundError("Selected project scope not found in this organization")
+    if body.employee_id and not employee:
         raise NotFoundError("Employee not found in this organization")
     if str(actor.portal_type or "").upper() == "FIELD_ADMIN":
-        if not body.project_id:
+        scope_project_id = body.scope_project_id or body.project_id
+        if not scope_project_id:
             raise ValidationError("Select a project before reporting employee hours")
         assignment_id = await session.scalar(select(EmployeeAssignment.id).where(
             EmployeeAssignment.organization_id == actor.organization_id,
             EmployeeAssignment.employee_id == body.employee_id,
-            EmployeeAssignment.project_id == body.project_id,
+            EmployeeAssignment.project_id == scope_project_id,
             EmployeeAssignment.status == "ACTIVE",
-        ))
-        if not assignment_id:
+        )) if body.employee_id else None
+        if body.employee_id and not assignment_id:
             raise ForbiddenError("You can only report hours for an employee actively assigned to the selected project")
 
     row = None
@@ -1329,22 +1350,34 @@ async def _save_employee_timesheet(
             raise ValidationError("Employee and period cannot be changed when editing a timesheet")
         old_total = sum(float(day.hours) for day in row.days)
         row.site_name = body.site_name.strip() if body.site_name and body.site_name.strip() else None
+        row.employee_name = employee_name or None
+        row.project_id = body.project_id
+        row.project_name = (body.project_name or "").strip() or None
+        row.scope_project_id = body.scope_project_id
         row.updated_by_id = actor.id
         row.days.clear()
         await session.flush()
         action = "employee.timesheet.updated"
         old_values = {"total_hours": old_total}
     else:
-        existing_id = await session.scalar(select(EmployeeTimesheet.id).where(
+        existing_query = select(EmployeeTimesheet.id).where(
             EmployeeTimesheet.organization_id == actor.organization_id,
-            EmployeeTimesheet.employee_id == body.employee_id,
             EmployeeTimesheet.period_start == body.period_start,
-        ))
+        )
+        if body.employee_id:
+            existing_query = existing_query.where(EmployeeTimesheet.employee_id == body.employee_id)
+        else:
+            existing_query = existing_query.where(EmployeeTimesheet.employee_id.is_(None), EmployeeTimesheet.employee_name.ilike(employee_name))
+        existing_id = await session.scalar(existing_query)
         if existing_id:
             raise ConflictError("A timesheet already exists for this employee and month")
         row = EmployeeTimesheet(
             organization_id=actor.organization_id,
             employee_id=body.employee_id,
+            employee_name=employee_name or None,
+            project_id=body.project_id,
+            project_name=(body.project_name or "").strip() or None,
+            scope_project_id=body.scope_project_id,
             period_start=body.period_start,
             site_name=body.site_name.strip() if body.site_name and body.site_name.strip() else None,
             created_by_id=actor.id,
@@ -1369,7 +1402,8 @@ async def _save_employee_timesheet(
         entity_type="employee_timesheet",
         entity_id=row.id,
         old_values=old_values,
-        new_values={"employee_id": str(body.employee_id), "period": body.period_start.strftime("%Y-%m"),
+        new_values={"employee_id": str(body.employee_id) if body.employee_id else None, "employee_name": row.employee_name, "period": body.period_start.strftime("%Y-%m"),
+                    "project_id": str(row.project_id) if row.project_id else None, "project_name": row.project_name,
                     "site_name": row.site_name, "total_hours": round(sum(float(entry.hours) for entry in body.entries), 2)},
         **request_metadata(request),
     )
