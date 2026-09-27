@@ -19,7 +19,7 @@ class Client(UUIDMixin, TimestampMixin, OrganizationMixin, ArchiveMixin, ActorMi
     primary_contact_email: Mapped[str | None] = mapped_column(String(320))
     primary_contact_phone: Mapped[str | None] = mapped_column(String(50))
     address: Mapped[str | None] = mapped_column(SAText)
-    country: Mapped[str | None] = mapped_column(String(2))
+    country: Mapped[str | None] = mapped_column(String(100))
     billing_email: Mapped[str | None] = mapped_column(String(320))
     notes: Mapped[str | None] = mapped_column(SAText)
     profile_photo_url: Mapped[str | None] = mapped_column(String(500))

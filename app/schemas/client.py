@@ -13,7 +13,7 @@ class ClientCreate(BaseModel):
     primary_contact_email: str | None = Field(default=None, max_length=320)
     primary_contact_phone: str | None = Field(default=None, max_length=50)
     address: str | None = None
-    country: str | None = Field(default=None, min_length=2, max_length=2)
+    country: str | None = Field(default=None, max_length=100)
     billing_email: str | None = Field(default=None, max_length=320)
     notes: str | None = None
     profile_photo_url: str | None = Field(default=None, max_length=500)
@@ -26,7 +26,7 @@ class ClientUpdate(BaseModel):
     primary_contact_email: str | None = Field(default=None, max_length=320)
     primary_contact_phone: str | None = Field(default=None, max_length=50)
     address: str | None = None
-    country: str | None = Field(default=None, min_length=2, max_length=2)
+    country: str | None = Field(default=None, max_length=100)
     billing_email: str | None = Field(default=None, max_length=320)
     notes: str | None = None
     is_active: bool | None = None
