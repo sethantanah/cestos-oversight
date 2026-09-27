@@ -12,8 +12,11 @@ class TimesheetDayInput(BaseModel):
 
 
 class EmployeeTimesheetWrite(BaseModel):
-    employee_id: uuid.UUID
+    employee_id: uuid.UUID | None = None
+    employee_name: str | None = Field(default=None, max_length=200)
     project_id: uuid.UUID | None = None
+    project_name: str | None = Field(default=None, max_length=200)
+    scope_project_id: uuid.UUID | None = None
     period_start: date
     site_name: str | None = Field(default=None, max_length=200)
     entries: list[TimesheetDayInput] = Field(default_factory=list, max_length=31)
