@@ -1375,7 +1375,10 @@ async def _save_employee_timesheet(
             existing_query = existing_query.where(EmployeeTimesheet.employee_id.is_(None), func.lower(EmployeeTimesheet.employee_name) == employee_name.lower())
         existing_id = await session.scalar(existing_query)
         if existing_id:
-            raise ConflictError("A timesheet already exists for this employee and month")
+            # Re-importing the same employee/month is an upsert: replace that
+            # report's daily values and assignment details instead of creating
+            # a duplicate or leaving the client with a conflict after retry.
+            return await _save_employee_timesheet(body, request, actor, session, existing_id)
         row = EmployeeTimesheet(
             organization_id=actor.organization_id,
             employee_id=body.employee_id,
@@ -1412,8 +1415,30 @@ async def _save_employee_timesheet(
                     "site_name": row.site_name, "total_hours": round(sum(float(entry.hours) for entry in body.entries), 2)},
         **request_metadata(request),
     )
+    saved_timesheet_id = row.id
+    saved_timesheet_employee_id = row.employee_id
     await session.commit()
-    return _timesheet_read(row, employee)
+    # Commit expires ORM state in the configured session. Re-query with the
+    # async relationship eagerly loaded before serializing; accessing row.days
+    # through lazy loading here raises MissingGreenlet after otherwise-successful
+    # inserts (and makes the client believe its save failed).
+    saved_row = await session.scalar(
+        select(EmployeeTimesheet)
+        .options(selectinload(EmployeeTimesheet.days))
+        .where(
+            EmployeeTimesheet.id == saved_timesheet_id,
+            EmployeeTimesheet.organization_id == actor.organization_id,
+        )
+    )
+    saved_employee = await session.scalar(
+        select(Employee).where(
+            Employee.id == saved_timesheet_employee_id,
+            Employee.organization_id == actor.organization_id,
+        )
+    ) if saved_timesheet_employee_id else None
+    if saved_row is None:
+        raise NotFoundError("Saved timesheet could not be loaded")
+    return _timesheet_read(saved_row, saved_employee)
 
 
 @router.post("/timesheets", status_code=201)
