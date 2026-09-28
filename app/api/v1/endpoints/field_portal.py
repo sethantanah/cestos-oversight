@@ -6,7 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
@@ -462,7 +462,11 @@ async def field_projects(
         await session.execute(
             select(Project.id, Project.name, Project.project_number.label("code"))
             .where(Project.id.in_(assigned_project_ids(actor)))
-            .order_by(Project.name)
+            .order_by(
+                case((Project.status == "ACTIVE", 0), else_=1),
+                Project.name,
+                Project.id,
+            )
         )
     ).all()
     return [{"id": row.id, "name": row.name, "code": row.code} for row in rows]

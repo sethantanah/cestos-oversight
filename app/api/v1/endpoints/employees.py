@@ -1392,6 +1392,9 @@ async def _save_employee_timesheet(
                 body, request, actor, session, existing_id, commit_changes
             )
         row = EmployeeTimesheet(
+            # The day rows below need the parent key before the session flushes;
+            # SQLAlchemy's UUIDMixin default is otherwise assigned only at flush.
+            id=uuid.uuid4(),
             organization_id=actor.organization_id,
             employee_id=body.employee_id,
             employee_name=employee_name or None,
@@ -1490,9 +1493,10 @@ async def create_employee_timesheets_batch(
     # The importer only needs IDs to attach the source CSV. Reloading every
     # timesheet and its daily rows here duplicates the entire batch in memory
     # immediately after saving, which is costly on the small production VM.
+    saved_ids = list(dict.fromkeys(identifiers))
     return {
-        "items": [{"id": str(identifier)} for identifier in identifiers],
-        "saved_count": len(identifiers),
+        "items": [{"id": str(identifier)} for identifier in saved_ids],
+        "saved_count": len(saved_ids),
     }
 
 

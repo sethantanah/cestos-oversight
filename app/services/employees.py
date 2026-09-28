@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -393,17 +393,28 @@ class EmployeeService:
                 pass
         order_column = SORTABLE_FIELDS.get(sort_by, Employee.created_at)
         order = order_column.desc() if sort_dir == "desc" else order_column.asc()
+        status_order = case(
+            (
+                (Employee.employment_status == EmploymentStatus.ACTIVE)
+                & Employee.is_active.is_(True)
+                & Employee.archived_at.is_(None),
+                0,
+            ),
+            else_=1,
+        )
         if availability_status is None:
             total = await self.session.scalar(select(func.count()).select_from(query.subquery()))
             rows = (
                 await self.session.scalars(
-                    query.order_by(order, Employee.id)
+                    query.order_by(status_order, order, Employee.id)
                     .offset((page - 1) * page_size)
                     .limit(page_size)
                 )
             ).all()
         else:
-            candidates = (await self.session.scalars(query.order_by(order, Employee.id))).all()
+            candidates = (
+                await self.session.scalars(query.order_by(status_order, order, Employee.id))
+            ).all()
             avail = await availability_map(self.session, self.actor.organization_id, candidates)
             matching = [e for e in candidates if avail.get(e.id) == availability_status]
             total = len(matching)

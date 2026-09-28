@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class TimesheetDayInput(BaseModel):
     work_date: date
-    hours: Decimal = Field(ge=0, le=24, max_digits=6, decimal_places=2)
+    hours: Decimal = Field(ge=0, le=15, max_digits=6, decimal_places=2)
 
 
 class EmployeeTimesheetWrite(BaseModel):

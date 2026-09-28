@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 
 from fastapi import Request
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -19,7 +19,7 @@ from app.models import (
     User,
 )
 from app.models.asset import AssetStatus
-from app.models.employee import AssignmentStatus
+from app.models.employee import AssignmentStatus, EmploymentStatus
 from app.models.project import ProjectStatus
 from app.repositories.base import organization_query
 from app.schemas.asset import AssetAssignmentRead, AssetRead
@@ -124,7 +124,11 @@ class ProjectService:
         total = await self.session.scalar(select(func.count()).select_from(query.subquery()))
         rows = (
             await self.session.scalars(
-                query.order_by(Project.created_at, Project.id)
+                query.order_by(
+                    case((Project.status == ProjectStatus.ACTIVE, 0), else_=1),
+                    Project.name,
+                    Project.id,
+                )
                 .offset((page - 1) * page_size)
                 .limit(page_size)
             )
@@ -294,8 +298,13 @@ class ProjectService:
             return []
         rows = (
             await self.session.scalars(
-                organization_query(Employee, self.actor.organization_id).where(
-                    Employee.id.in_(employee_ids)
+                organization_query(Employee, self.actor.organization_id)
+                .where(Employee.id.in_(employee_ids))
+                .order_by(
+                    case((Employee.employment_status == EmploymentStatus.ACTIVE, 0), else_=1),
+                    Employee.last_name,
+                    Employee.first_name,
+                    Employee.id,
                 )
             )
         ).all()
