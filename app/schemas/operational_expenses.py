@@ -6,7 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ExpenseItem(BaseModel):
     inventory_item_id: uuid.UUID | None = None
-    name: str = Field(min_length=1, max_length=250)
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=255)
     quantity: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
     unit_cost: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
     total: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)

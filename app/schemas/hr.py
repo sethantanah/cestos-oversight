@@ -54,7 +54,7 @@ class AccountEmail(BaseModel):
 
 class PasswordReset(BaseModel):
     token: SecretStr = Field(min_length=32, max_length=200)
-    password: SecretStr = Field(min_length=12, max_length=128)
+    password: SecretStr = Field(min_length=6, max_length=128)
 
 
 class SelfProfileUpdate(BaseModel):

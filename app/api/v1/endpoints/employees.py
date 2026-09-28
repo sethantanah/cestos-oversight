@@ -4,7 +4,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -1355,13 +1355,22 @@ async def _save_employee_timesheet(
             raise ValidationError("Employee and period cannot be changed when editing a timesheet")
         old_total = sum(float(day.hours) for day in row.days)
         row.site_name = body.site_name.strip() if body.site_name and body.site_name.strip() else None
+        if body.source_file:
+            row.source_file = body.source_file.strip()[:255]
         row.employee_name = employee_name or None
         row.project_id = body.project_id
         row.project_name = (body.project_name or "").strip() or None
         row.scope_project_id = body.scope_project_id
         row.updated_by_id = actor.id
-        row.days.clear()
-        await session.flush()
+        # Replace child rows explicitly instead of mutating the loaded
+        # delete-orphan collection. Re-imports commonly replace every day and
+        # ORM collection flush ordering can otherwise collide with the
+        # (timesheet_id, work_date) unique constraint.
+        await session.execute(delete(EmployeeTimesheetDay).where(
+            EmployeeTimesheetDay.timesheet_id == row.id,
+            EmployeeTimesheetDay.organization_id == actor.organization_id,
+        ))
+        session.expire(row, ["days"])
         action = "employee.timesheet.updated"
         old_values = {"total_hours": old_total}
     else:
@@ -1388,6 +1397,7 @@ async def _save_employee_timesheet(
             scope_project_id=body.scope_project_id,
             period_start=body.period_start,
             site_name=body.site_name.strip() if body.site_name and body.site_name.strip() else None,
+            source_file=body.source_file.strip()[:255] if body.source_file else None,
             created_by_id=actor.id,
             updated_by_id=actor.id,
         )
@@ -1396,7 +1406,8 @@ async def _save_employee_timesheet(
         old_values = None
 
     for entry in body.entries:
-        row.days.append(EmployeeTimesheetDay(
+        session.add(EmployeeTimesheetDay(
+            timesheet_id=row.id,
             organization_id=actor.organization_id,
             work_date=entry.work_date,
             hours=entry.hours,

@@ -80,29 +80,6 @@ def get_migration_status() -> tuple[str | None, str | None]:
         return None, None
 
 
-def recover_stale_alembic_version() -> bool:
-    """Repair a stale Alembic version marker when the table already exists."""
-    logger.warning(
-        "Detected stale Alembic version metadata; stamping the current head to recover state."
-    )
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "alembic", "stamp", "head"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            logger.info("✓ Alembic version state recovered successfully")
-            return True
-
-        logger.error("✗ Alembic stamp recovery failed: %s", result.stderr.strip() or result.stdout.strip())
-        return False
-    except Exception as exc:
-        logger.error(f"✗ Failed to recover Alembic version state: {exc}")
-        return False
-
-
 def run_migrations() -> bool:
     """
     Run pending Alembic migrations.
@@ -114,7 +91,9 @@ def run_migrations() -> bool:
     
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            # `heads` applies every branch head and remains safe when the
+            # repository temporarily has independent migration branches.
+            [sys.executable, "-m", "alembic", "upgrade", "heads"],
             check=False,
             capture_output=True,
             text=True,
@@ -123,26 +102,6 @@ def run_migrations() -> bool:
         if result.returncode == 0:
             logger.info("✓ Database migrations completed successfully")
             return True
-
-        output = (result.stderr or result.stdout or "").strip()
-        if "alembic_version" in output and "duplicate key value violates unique constraint" in output:
-            logger.warning("Detected duplicate Alembic version table conflict; attempting recovery")
-            if recover_stale_alembic_version():
-                retry = subprocess.run(
-                    [sys.executable, "-m", "alembic", "upgrade", "head"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                if retry.returncode == 0:
-                    logger.info("✓ Database migrations completed successfully after recovery")
-                    return True
-                logger.error(f"✗ Database migrations failed after recovery with exit code {retry.returncode}")
-                if retry.stderr:
-                    logger.error(retry.stderr.strip())
-                if retry.stdout:
-                    logger.error(retry.stdout.strip())
-                return False
 
         logger.error(f"✗ Database migrations failed with exit code {result.returncode}")
         if result.stderr:
@@ -169,19 +128,16 @@ async def migrate() -> int:
         logger.error("Cannot proceed without database connection")
         return 1
     
-    # Step 2: Check migration status
+    # Step 2: Log migration status for diagnostics. Do not use a string
+    # comparison to skip the upgrade: Alembic output can contain multiple
+    # heads, and a stamped version can be ahead of a missing schema object.
     current, heads = get_migration_status()
-    
     if current is None or heads is None:
-        logger.warning("Could not determine migration status, attempting migrations anyway")
-        if not run_migrations():
-            return 1
-    elif current == heads:
-        logger.info("✓ Database is up to date, no migrations needed")
+        logger.warning("Could not determine migration status; attempting all migration heads")
     else:
-        logger.info("Pending migrations detected, running migrations...")
-        if not run_migrations():
-            return 1
+        logger.info("Applying all migrations through every configured head")
+    if not run_migrations():
+        return 1
     
     logger.info("✓ Database migration process completed successfully")
     return 0

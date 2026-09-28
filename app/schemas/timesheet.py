@@ -19,6 +19,7 @@ class EmployeeTimesheetWrite(BaseModel):
     scope_project_id: uuid.UUID | None = None
     period_start: date
     site_name: str | None = Field(default=None, max_length=200)
+    source_file: str | None = Field(default=None, max_length=255)
     entries: list[TimesheetDayInput] = Field(default_factory=list, max_length=31)
 
     @model_validator(mode="after")

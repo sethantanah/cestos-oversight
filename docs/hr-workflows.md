@@ -57,7 +57,7 @@ account. A matching active user in the SAME organization is linked; their passwo
 are preserved. An account already linked to another employee is rejected. New accounts have
 no HR/admin grants, a unique random unusable initial password, and a queued setup email.
 There is no shared default password. Setup links last 24 hours, are single-use, and require a
-password of at least 12 characters. Only token hashes are persisted; raw tokens are generated
+password of at least 6 characters. Only token hashes are persisted; raw tokens are generated
 for SMTP delivery and never stored in the mail queue or application logs.
 
 Existing employees are not silently backfilled. Superadmins can use Link or create account

@@ -16,13 +16,14 @@ from app.core.dependencies import get_current_active_user, request_storage
 from app.db.session import get_session
 from app.models import Role, User
 from app.models.inventory import InventoryItem
-from app.models.procurement import PoStatus, PurchaseOrder
+from app.models.procurement import PoStatus, PurchaseOrder, PurchaseOrderItem
 from app.models.hr import Notification
 from app.models.operational_logs import OperationalExpense, OperationalExpensePayment, OperationalPayee
 from app.models.role import user_roles
 from app.schemas.operational_expenses import OperationalExpenseCreate, OperationalExpenseRead, OperationalExpenseUpdate
 from app.services.field_notifications import emit_event
 from app.services.notification_schedules import emit_configured_event
+from app.services.audit import record_audit
 
 router = APIRouter(prefix="/operational-expenses", tags=["Operational expenses"])
 
@@ -171,6 +172,71 @@ async def create_expense(
         calculated += line_total
         item_rows.append({**item.model_dump(mode="json"), "total": str(line_total)})
     total = body.total_cost if body.manual_total and body.total_cost is not None else calculated
+    if purchase_order:
+        old_po_items = [
+            {
+                "inventory_item_id": str(line.inventory_item_id) if line.inventory_item_id else None,
+                "item_name": line.item_name,
+                "description": line.description,
+                "quantity_ordered": str(line.quantity_ordered),
+                "unit_price": str(line.unit_price),
+                "quantity_received": str(line.quantity_received),
+            }
+            for line in purchase_order.items
+        ]
+        # Keep receipt history attached to matching order lines. Unreceived
+        # lines are replaced by the actual expense lines; received legacy lines
+        # remain if they cannot be matched to an expense line.
+        available = list(purchase_order.items)
+        synced_items = []
+        used_ids: set[uuid.UUID] = set()
+        for item in body.items:
+            match = next((line for line in available if line.id not in used_ids and item.inventory_item_id and line.inventory_item_id == item.inventory_item_id), None)
+            if match is None:
+                item_name = item.name.strip().casefold()
+                match = next((line for line in available if line.id not in used_ids and (line.item_name or line.description or "").strip().casefold() == item_name), None)
+            if match:
+                received = match.quantity_received or Decimal("0")
+                if item.quantity < received:
+                    await run_in_threadpool(storage.delete, stored.relative_path)
+                    raise HTTPException(409, f"Expense quantity for '{item.name}' cannot be less than the {received:g} units already received against this purchase order")
+                used_ids.add(match.id)
+                match.inventory_item_id = item.inventory_item_id
+                match.item_name = item.name.strip()
+                match.description = item.description.strip() if item.description else None
+                match.quantity_ordered = item.quantity
+                match.unit_price = item.unit_cost
+                match.total_price = (item.quantity * item.unit_cost).quantize(Decimal("0.01"))
+                synced_items.append(match)
+            else:
+                match = PurchaseOrderItem(
+                    organization_id=actor.organization_id,
+                    purchase_order_id=purchase_order.id,
+                    inventory_item_id=item.inventory_item_id,
+                    item_name=item.name.strip(),
+                    description=item.description.strip() if item.description else None,
+                    quantity_ordered=item.quantity,
+                    quantity_received=Decimal("0"),
+                    unit_price=item.unit_cost,
+                    total_price=(item.quantity * item.unit_cost).quantize(Decimal("0.01")),
+                )
+                synced_items.append(match)
+        synced_items.extend(line for line in available if line.id not in used_ids and (line.quantity_received or Decimal("0")) > 0)
+        if body.items:
+            purchase_order.items[:] = synced_items
+        old_po_total = str(purchase_order.total_amount)
+        purchase_order.total_amount = total
+        purchase_order.updated_by_id = actor.id
+        record_audit(
+            session,
+            organization_id=actor.organization_id,
+            actor_user_id=actor.id,
+            action="purchase_order.items_synced_from_expense",
+            entity_type="purchase_order",
+            entity_id=purchase_order.id,
+            old_values={"total_amount": old_po_total, "items": old_po_items},
+            new_values={"total_amount": str(total), "items": item_rows},
+        )
     row = OperationalExpense(
         organization_id=actor.organization_id, created_by_id=actor.id, submitted_by_id=actor.id,
         purchase_order_id=body.purchase_order_id,

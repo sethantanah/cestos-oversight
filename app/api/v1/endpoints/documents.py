@@ -269,7 +269,7 @@ async def upload(
     if bool(source_type) != bool(source_id):
         raise ValidationError("Both source type and source ID are required to link a document")
     if source_type:
-        if source_type not in {"pm_job_card", "breakdown_job_card", "maintenance_assessment", "hse_incident", "employee_timesheet_import", "pm_job_card_import", "breakdown_job_card_import", "maintenance_assessment_import"}:
+        if source_type not in {"pm_job_card", "breakdown_job_card", "maintenance_assessment", "hse_incident", "employee_timesheet_import", "pm_job_card_import", "breakdown_job_card_import", "maintenance_assessment_import", "action_tracker_import", "pm_tracker_import", "equipment_register_import"}:
             raise ValidationError("Unsupported linked document type")
         if source_type == "employee_timesheet_import":
             from app.models.timesheet import EmployeeTimesheet
@@ -278,7 +278,7 @@ async def upload(
             from app.models.maintenance_hse import HseIncident
             linked_model = HseIncident
         else:
-            from app.models.operational_logs import BreakdownJobCard, MaintenanceAssessmentReport, PMJobCard
+            from app.models.operational_logs import ActionTracker, BreakdownJobCard, EquipmentRegister, MaintenanceAssessmentReport, PMJobCard, PMTracker
             linked_model = {
                 "pm_job_card": PMJobCard,
                 "breakdown_job_card": BreakdownJobCard,
@@ -286,6 +286,9 @@ async def upload(
                 "pm_job_card_import": PMJobCard,
                 "breakdown_job_card_import": BreakdownJobCard,
                 "maintenance_assessment_import": MaintenanceAssessmentReport,
+                "action_tracker_import": ActionTracker,
+                "pm_tracker_import": PMTracker,
+                "equipment_register_import": EquipmentRegister,
             }[source_type]
         linked_scope = [
             linked_model.id == source_id,
@@ -311,30 +314,42 @@ async def upload(
     except ValueError as error:
         raise ValidationError(str(error)) from error
     identifier = uuid.uuid4()
-    row = D(
+    existing_import = None
+    if source_type and source_type.endswith("_import"):
+        existing_import = await session.scalar(select(D).where(
+            D.organization_id == actor.organization_id,
+            D.source_type == source_type,
+            D.source_id == source_id,
+        ))
+    row = existing_import or D(
         id=identifier,
         organization_id=actor.organization_id,
         source_type=source_type or "library",
         source_id=source_id or identifier,
-        title=metadata.title,
-        category=metadata.category,
-        tags=metadata.tags,
-        storage_path=stored.relative_path,
-        file_name=stored.filename,
-        mime_type=stored.mime_type,
-        size_bytes=stored.size_bytes,
         owner_id=actor.id,
-        visibility=visibility,
     )
+    old_import_path = row.storage_path if existing_import else None
+    row.title = metadata.title
+    row.category = metadata.category
+    row.tags = metadata.tags
+    row.storage_path = stored.relative_path
+    row.file_name = stored.filename
+    row.mime_type = stored.mime_type
+    row.size_bytes = stored.size_bytes
+    row.owner_id = actor.id
+    row.visibility = visibility
     try:
-        session.add(row)
+        if existing_import is None:
+            session.add(row)
         await session.flush()
-        audit(session, actor, row, "document.uploaded")
+        audit(session, actor, row, "document.replaced" if existing_import else "document.uploaded")
         await session.commit()
     except Exception:
         await session.rollback()
         await run_in_threadpool(storage.delete, stored.relative_path)
         raise
+    if old_import_path and old_import_path != stored.relative_path:
+        await run_in_threadpool(storage.delete, old_import_path)
     return public(row, actor)
 
 

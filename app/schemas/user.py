@@ -51,7 +51,7 @@ class UserRead(ORMModel):
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: SecretStr = Field(min_length=12, max_length=128)
+    password: SecretStr = Field(min_length=6, max_length=128)
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)
     is_field_portal_only: bool = False
