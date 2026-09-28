@@ -37,3 +37,7 @@ class EmployeeTimesheetWrite(BaseModel):
                 raise ValueError("The selected day is not valid for this month")
             seen.add(entry.work_date)
         return self
+
+
+class EmployeeTimesheetBatchWrite(BaseModel):
+    items: list[EmployeeTimesheetWrite] = Field(min_length=1, max_length=500)

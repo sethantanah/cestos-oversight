@@ -100,7 +100,11 @@ async def list_expenses(actor: User = Depends(get_current_active_user), session:
         elif history_missing:
             # The legacy completion has no payment amount attached, so report
             # the full balance as outstanding and flag the missing history.
-            data["status"] = "PARTIALLY_PAID"
+            data["status"] = "PAYMENT_RECONCILIATION_REQUIRED"
+        elif stored_status == "PARTIALLY_PAID" and paid_amount == 0:
+            # A partial-payment label requires at least one recorded installment.
+            # Older reconciliation logic marked all unpaid balances as partial.
+            data["status"] = "SUBMITTED"
         data["payments"] = [{"id": str(p.id), "expense_id": str(p.expense_id), "amount": str(p.amount), "payment_date": p.payment_date.isoformat(),
                               "created_at": p.created_at.isoformat() if p.created_at else None,
                               "receipt_name": p.receipt_name, "receipt_mime_type": p.receipt_mime_type,

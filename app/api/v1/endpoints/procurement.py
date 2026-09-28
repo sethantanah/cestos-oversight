@@ -23,8 +23,31 @@ from app.schemas.procurement import (
     ReceiveGoodsRequest,
 )
 from app.services import procurement as procurement_service
+from app.services.line_item_extraction import extract_line_items
 
 router = APIRouter(prefix="/procurement", tags=["procurement"])
+
+
+@router.post("/extract-line-items")
+async def extract_purchase_document_line_items(
+    file: UploadFile = File(...),
+    document_type: str = Query(..., pattern="^(purchase_order|expense)$"),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Return a best-effort, schema-aligned draft from an uploaded document."""
+    del current_user  # Authentication is required; extraction does not persist the upload.
+    data = await file.read(10 * 1024 * 1024 + 1)
+    try:
+        return await run_in_threadpool(
+            extract_line_items,
+            data,
+            file.filename or "document",
+            document_type,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+    except RuntimeError as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
 
 
 def purchase_order_action_urls(po_id: uuid.UUID) -> dict[str, str]:

@@ -101,7 +101,7 @@ from app.services.workforce import (
     TimeLogService,
     LeaveRequestService,
 )
-from app.schemas.timesheet import EmployeeTimesheetWrite
+from app.schemas.timesheet import EmployeeTimesheetBatchWrite, EmployeeTimesheetWrite
 from app.services.audit import record_audit, request_metadata
 
 router = APIRouter(prefix="/employees", tags=["employees"])
@@ -1303,6 +1303,7 @@ async def _save_employee_timesheet(
     actor: User,
     session: AsyncSession,
     timesheet_id: uuid.UUID | None = None,
+    commit_changes: bool = True,
 ) -> dict:
     employee = await session.scalar(select(Employee).where(
         Employee.id == body.employee_id,
@@ -1387,7 +1388,9 @@ async def _save_employee_timesheet(
             # Re-importing the same employee/month is an upsert: replace that
             # report's daily values and assignment details instead of creating
             # a duplicate or leaving the client with a conflict after retry.
-            return await _save_employee_timesheet(body, request, actor, session, existing_id)
+            return await _save_employee_timesheet(
+                body, request, actor, session, existing_id, commit_changes
+            )
         row = EmployeeTimesheet(
             organization_id=actor.organization_id,
             employee_id=body.employee_id,
@@ -1428,6 +1431,8 @@ async def _save_employee_timesheet(
     )
     saved_timesheet_id = row.id
     saved_timesheet_employee_id = row.employee_id
+    if not commit_changes:
+        return {"id": str(saved_timesheet_id)}
     await session.commit()
     # Commit expires ORM state in the configured session. Re-query with the
     # async relationship eagerly loaded before serializing; accessing row.days
@@ -1460,6 +1465,55 @@ async def create_employee_timesheet(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     return await _save_employee_timesheet(body, request, actor, session)
+
+
+@router.post("/timesheets/batch", status_code=201)
+async def create_employee_timesheets_batch(
+    body: EmployeeTimesheetBatchWrite,
+    request: Request,
+    actor: User = Depends(timesheet_reporter),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Validate and upsert an imported set of employee time sheets atomically."""
+    identifiers: list[uuid.UUID] = []
+    try:
+        for item in body.items:
+            saved = await _save_employee_timesheet(
+                item, request, actor, session, commit_changes=False
+            )
+            identifiers.append(uuid.UUID(saved["id"]))
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+
+    rows = (await session.scalars(
+        select(EmployeeTimesheet)
+        .options(selectinload(EmployeeTimesheet.days))
+        .where(
+            EmployeeTimesheet.organization_id == actor.organization_id,
+            EmployeeTimesheet.id.in_(identifiers),
+        )
+    )).all()
+    rows_by_id = {row.id: row for row in rows}
+    employee_ids = {row.employee_id for row in rows if row.employee_id}
+    employees_by_id = {}
+    if employee_ids:
+        employees_by_id = {
+            employee.id: employee
+            for employee in (await session.scalars(select(Employee).where(
+                Employee.organization_id == actor.organization_id,
+                Employee.id.in_(employee_ids),
+            ))).all()
+        }
+    return {
+        "items": [
+            _timesheet_read(rows_by_id[identifier], employees_by_id.get(rows_by_id[identifier].employee_id))
+            for identifier in identifiers
+            if identifier in rows_by_id
+        ],
+        "saved_count": len(rows_by_id),
+    }
 
 
 @router.put("/timesheets/{timesheet_id}")
