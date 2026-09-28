@@ -1487,32 +1487,12 @@ async def create_employee_timesheets_batch(
         await session.rollback()
         raise
 
-    rows = (await session.scalars(
-        select(EmployeeTimesheet)
-        .options(selectinload(EmployeeTimesheet.days))
-        .where(
-            EmployeeTimesheet.organization_id == actor.organization_id,
-            EmployeeTimesheet.id.in_(identifiers),
-        )
-    )).all()
-    rows_by_id = {row.id: row for row in rows}
-    employee_ids = {row.employee_id for row in rows if row.employee_id}
-    employees_by_id = {}
-    if employee_ids:
-        employees_by_id = {
-            employee.id: employee
-            for employee in (await session.scalars(select(Employee).where(
-                Employee.organization_id == actor.organization_id,
-                Employee.id.in_(employee_ids),
-            ))).all()
-        }
+    # The importer only needs IDs to attach the source CSV. Reloading every
+    # timesheet and its daily rows here duplicates the entire batch in memory
+    # immediately after saving, which is costly on the small production VM.
     return {
-        "items": [
-            _timesheet_read(rows_by_id[identifier], employees_by_id.get(rows_by_id[identifier].employee_id))
-            for identifier in identifiers
-            if identifier in rows_by_id
-        ],
-        "saved_count": len(rows_by_id),
+        "items": [{"id": str(identifier)} for identifier in identifiers],
+        "saved_count": len(identifiers),
     }
 
 
