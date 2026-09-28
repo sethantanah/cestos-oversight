@@ -1,14 +1,14 @@
 """Ensure the organization data-change feed exists even on previously stamped databases.
 
-Revision ID: 20261017_repair_database_change_feed
-Revises: 20261016_po_item_description_nullable
+Revision ID: 20261017_repair_change_feed
+Revises: 20261016_po_desc_nullable
 """
 
 from alembic import op
 
 
-revision = "20261017_repair_database_change_feed"
-down_revision = "20261016_po_item_description_nullable"
+revision = "20261017_repair_change_feed"
+down_revision = "20261016_po_desc_nullable"
 branch_labels = None
 depends_on = None
 
@@ -108,6 +108,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # This is a repair revision. The original change-feed revision owns the
-    # objects, so rolling back this marker must not remove a healthy feed.
     pass
