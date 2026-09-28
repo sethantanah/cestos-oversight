@@ -5,7 +5,7 @@ import sqlalchemy as sa
 
 
 revision = "20261016_po_item_description_nullable"
-down_revision = "20261015_timesheet_source_names"
+down_revision = "20261016_data_change_feed"
 branch_labels = None
 depends_on = None
 

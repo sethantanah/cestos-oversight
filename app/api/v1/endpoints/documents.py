@@ -269,9 +269,12 @@ async def upload(
     if bool(source_type) != bool(source_id):
         raise ValidationError("Both source type and source ID are required to link a document")
     if source_type:
-        if source_type not in {"pm_job_card", "breakdown_job_card", "maintenance_assessment", "hse_incident"}:
+        if source_type not in {"pm_job_card", "breakdown_job_card", "maintenance_assessment", "hse_incident", "employee_timesheet_import", "pm_job_card_import", "breakdown_job_card_import", "maintenance_assessment_import"}:
             raise ValidationError("Unsupported linked document type")
-        if source_type == "hse_incident":
+        if source_type == "employee_timesheet_import":
+            from app.models.timesheet import EmployeeTimesheet
+            linked_model = EmployeeTimesheet
+        elif source_type == "hse_incident":
             from app.models.maintenance_hse import HseIncident
             linked_model = HseIncident
         else:
@@ -280,12 +283,17 @@ async def upload(
                 "pm_job_card": PMJobCard,
                 "breakdown_job_card": BreakdownJobCard,
                 "maintenance_assessment": MaintenanceAssessmentReport,
+                "pm_job_card_import": PMJobCard,
+                "breakdown_job_card_import": BreakdownJobCard,
+                "maintenance_assessment_import": MaintenanceAssessmentReport,
             }[source_type]
-        linked_record = await session.scalar(select(linked_model.id).where(
+        linked_scope = [
             linked_model.id == source_id,
             linked_model.organization_id == actor.organization_id,
-            linked_model.archived_at.is_(None),
-        ))
+        ]
+        if hasattr(linked_model, "archived_at"):
+            linked_scope.append(linked_model.archived_at.is_(None))
+        linked_record = await session.scalar(select(linked_model.id).where(*linked_scope))
         if linked_record is None:
             raise NotFoundError("Linked maintenance record not found")
         visibility = "PUBLIC"
