@@ -82,7 +82,7 @@ class PurchaseOrderItem(UUIDMixin, TimestampMixin, OrganizationMixin, Base):
     purchase_order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_orders.id", ondelete="CASCADE"), index=True)
     inventory_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("inventory_items.id"))
     item_name: Mapped[str | None] = mapped_column(String(200))
-    description: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     quantity_ordered: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     quantity_received: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.0"))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 2))

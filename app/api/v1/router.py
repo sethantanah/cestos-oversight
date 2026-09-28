@@ -9,6 +9,7 @@ from app.api.v1.endpoints import (
     command_center,
     control_tower,
     documents,
+    data_sync,
     drilling,
     email,
     employees,
@@ -96,6 +97,7 @@ router.include_router(operational_logs.router)
 router.include_router(operational_expenses.router)
 router.include_router(notifications.router)
 router.include_router(documents.router)
+router.include_router(data_sync.router)
 router.include_router(intelligence.router)
 router.include_router(email.router)
 router.include_router(drilling.router)

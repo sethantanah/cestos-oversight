@@ -10,9 +10,9 @@ from app.models.procurement import PoStatus
 class PurchaseOrderItemCreate(BaseModel):
     inventory_item_id: uuid.UUID | None = None
     item_name: str | None = Field(default=None, max_length=200)
-    description: str = Field(..., min_length=1, max_length=255)
-    quantity_ordered: Decimal = Field(..., gt=0)
-    unit_price: Decimal = Field(..., ge=0)
+    description: str | None = Field(default=None, max_length=255)
+    quantity_ordered: Decimal = Field(Decimal("0.0"), ge=0)
+    unit_price: Decimal = Field(Decimal("0.0"), ge=0)
 
 
 class PurchaseOrderItemResponse(BaseModel):
@@ -22,7 +22,7 @@ class PurchaseOrderItemResponse(BaseModel):
     purchase_order_id: uuid.UUID
     inventory_item_id: uuid.UUID | None = None
     item_name: str | None = None
-    description: str
+    description: str | None = None
     quantity_ordered: float
     quantity_received: float
     unit_price: float

@@ -100,9 +100,10 @@ async def list_expenses(actor: User = Depends(get_current_active_user), session:
             # The legacy completion has no payment amount attached, so report
             # the full balance as outstanding and flag the missing history.
             data["status"] = "PARTIALLY_PAID"
-        data["payments"] = [{"id": str(p.id), "amount": str(p.amount), "payment_date": p.payment_date.isoformat(),
+        data["payments"] = [{"id": str(p.id), "expense_id": str(p.expense_id), "amount": str(p.amount), "payment_date": p.payment_date.isoformat(),
                               "created_at": p.created_at.isoformat() if p.created_at else None,
-                              "receipt_name": p.receipt_name, "reference": p.reference, "notes": p.notes,
+                              "receipt_name": p.receipt_name, "receipt_mime_type": p.receipt_mime_type,
+                              "receipt_size_bytes": p.receipt_size_bytes, "reference": p.reference, "notes": p.notes,
                               "paid_by_id": str(p.paid_by_id)} for p in payments]
         data["purchase_order_number"] = purchase_order_number
         if submitter:
@@ -296,11 +297,14 @@ async def complete_expense(expense_id: uuid.UUID, amount: Decimal = Form(...), p
             raise HTTPException(422, str(exc)) from exc
         receipt_path, receipt_name = stored.relative_path, stored.filename
         receipt_mime_type, receipt_size_bytes = stored.mime_type, stored.size_bytes
-    elif row.receipt_path and row.receipt_name:
+    elif not prior and row.receipt_path and row.receipt_name:
+        # Preserve the legacy reconciliation flow only when the expense has
+        # no installment history yet. Never attach an earlier installment's
+        # receipt to a later disbursement.
         receipt_path, receipt_name = row.receipt_path, row.receipt_name
         receipt_mime_type, receipt_size_bytes = row.receipt_mime_type, row.receipt_size_bytes
     else:
-        raise HTTPException(422, "Attach a non-empty payment receipt")
+        raise HTTPException(422, "Attach a receipt for this payment installment")
     # Clear any stale COMPLETED state before inserting a payment. Some
     # installations may have an immediate database trigger, which would
     # otherwise inspect the legacy status before this transaction updates it.
@@ -340,9 +344,10 @@ async def complete_expense(expense_id: uuid.UUID, amount: Decimal = Form(...), p
     data_out["paid_amount"] = str(paid_total)
     data_out["balance_due"] = str(balance_due)
     data_out["payments"] = [
-        {"id": str(p.id), "amount": str(p.amount), "payment_date": p.payment_date.isoformat(),
+        {"id": str(p.id), "expense_id": str(p.expense_id), "amount": str(p.amount), "payment_date": p.payment_date.isoformat(),
          "created_at": p.created_at.isoformat() if p.created_at else None,
-         "receipt_name": p.receipt_name, "reference": p.reference, "notes": p.notes, "paid_by_id": str(p.paid_by_id)}
+         "receipt_name": p.receipt_name, "receipt_mime_type": p.receipt_mime_type,
+         "receipt_size_bytes": p.receipt_size_bytes, "reference": p.reference, "notes": p.notes, "paid_by_id": str(p.paid_by_id)}
         for p in [*prior, payment]
     ]
     return data_out
