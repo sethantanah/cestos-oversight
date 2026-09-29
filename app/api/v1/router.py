@@ -33,11 +33,13 @@ from app.api.v1.endpoints import (
     project_reports,
     projects,
     users,
+    utils,
     work_completion,
 )
 
 router = APIRouter()
 router.include_router(auth.router)
+router.include_router(utils.router)
 router.include_router(users.router)
 router.include_router(employees.router)
 router.include_router(pm_job_cards.router)
