@@ -180,6 +180,62 @@ async def test_event_is_atomic_deduplicated_and_recipient_scoped(field_db):
     assert len(f.session.scalars(select(EmailDelivery)).all()) == 1
 
 
+async def test_finance_workflow_events_stay_in_app_for_executives_without_email(field_db):
+    f = field_db
+    executive = User(
+        organization_id=f.org.id,
+        email="executive@example.com",
+        first_name="Executive",
+        last_name="User",
+        password_hash="test",
+        portal_type="EXECUTIVE",
+    )
+    f.session.add(executive)
+    f.session.commit()
+
+    for kind in ("PURCHASE_ORDER_APPROVED", "EXPENSE_SUBMITTED_TO_FINANCE"):
+        await emit_event(
+            f.db,
+            f.org.id,
+            {executive.id},
+            f"quiet-executive-email:{kind}",
+            "Workflow update",
+            "FINANCE",
+            kind,
+        )
+    await f.db.commit()
+
+    assert len(f.session.scalars(select(Notification).where(Notification.recipient_id == executive.id)).all()) == 2
+    assert not f.session.scalars(select(EmailDelivery).where(EmailDelivery.recipient_id == executive.id)).all()
+
+
+async def test_purchase_order_submission_still_queues_executive_email(field_db):
+    f = field_db
+    executive = User(
+        organization_id=f.org.id,
+        email="executive@example.com",
+        first_name="Executive",
+        last_name="User",
+        password_hash="test",
+        portal_type="EXECUTIVE",
+    )
+    f.session.add(executive)
+    f.session.commit()
+
+    await emit_event(
+        f.db,
+        f.org.id,
+        {executive.id},
+        "purchase-order:submitted-executive-email",
+        "Purchase order requires review",
+        "PROJECTS",
+        "PURCHASE_ORDER_SUBMITTED",
+    )
+    await f.db.commit()
+
+    assert f.session.scalar(select(EmailDelivery).where(EmailDelivery.recipient_id == executive.id)).kind == "PURCHASE_ORDER_SUBMITTED"
+
+
 async def test_leave_recipients_and_decision_match_email(field_db):
     f = field_db
     assert await supervisor_recipients(f.db, f.org.id, f.employee.id) == {f.supervisor.id}

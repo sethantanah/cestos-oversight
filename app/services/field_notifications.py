@@ -173,7 +173,11 @@ async def emit_event(
         if not created:
             continue
         count += 1
-        if delivery_method in {"BOTH", "EMAIL"}:
+        suppress_executive_email = portal == "EXECUTIVE" and kind in {
+            "PURCHASE_ORDER_APPROVED",
+            "EXPENSE_SUBMITTED_TO_FINANCE",
+        }
+        if delivery_method in {"BOTH", "EMAIL"} and not suppress_executive_email:
             await session.execute(
                 insert(EmailDelivery)
                 .values(
