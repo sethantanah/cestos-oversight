@@ -14,6 +14,7 @@ from app.schemas.procurement import (
 )
 from app.services.counters import next_business_number
 from app.services.notification_schedules import emit_configured_event
+from app.services.vendors import ensure_vendor
 
 
 async def create_purchase_order(
@@ -48,6 +49,7 @@ async def create_purchase_order(
             )
             session.add(supplier)
             await session.flush()
+    await ensure_vendor(session, organization_id, actor_id, supplier.name)
     po_number = await next_business_number(session, organization_id, "purchase_order")
     po = PurchaseOrder(
         organization_id=organization_id,
@@ -171,6 +173,7 @@ async def update_purchase_order(
         )
         session.add(supplier)
         await session.flush()
+    await ensure_vendor(session, organization_id, actor_id, supplier.name)
 
     po.supplier = supplier
     po.project_id = payload.project_id

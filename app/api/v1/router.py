@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     equipment,
     equipment_register,
     field_portal,
+    finance_vendors,
     hr,
     hse,
     intelligence,
@@ -95,6 +96,7 @@ router.add_api_route(
 router.include_router(work_completion.router)
 router.include_router(inventory.router)
 router.include_router(inventory.operational_router)
+router.include_router(finance_vendors.router)
 router.include_router(operational_logs.router)
 router.include_router(operational_expenses.router)
 router.include_router(notifications.router)

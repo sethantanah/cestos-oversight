@@ -23,6 +23,7 @@ from app.services.employee_access import supervised_employee_ids
 from app.services.field_consumables import ConsumptionCreate
 from app.services.field_shifts import FieldShiftEdit
 from app.services.field_work import FieldWorkEdit, FieldWorkUpdate
+from app.services.vendors import ensure_vendor
 
 router = APIRouter(prefix="/field-portal", tags=["Field portal"])
 
@@ -35,6 +36,7 @@ async def create_fuel_delivery(body: FuelDeliveryCreate, actor: User = Depends(g
         raise ForbiddenError("Select an active site belonging to the selected project")
     row = FuelDelivery(organization_id=actor.organization_id, created_by_id=actor.id, **body.model_dump())
     session.add(row)
+    await ensure_vendor(session, actor.organization_id, actor.id, body.supplier or "", bank_account_type="FUEL")
     await session.commit()
     await session.refresh(row)
     return row

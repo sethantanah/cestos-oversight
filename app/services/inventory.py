@@ -282,6 +282,19 @@ class InventoryService:
                 field,
                 await next_business_number(self.session, self.org, "inventory_" + counter),
             )
+        if kind == "suppliers":
+            from app.services.vendors import ensure_vendor
+
+            await ensure_vendor(
+                self.session,
+                self.org,
+                self.actor.id,
+                row.name,
+                phone=row.phone,
+                bank_account_details=row.bank_account_details,
+                payment_method=row.payment_method,
+                bank_account_type=row.bank_account_type,
+            )
         row.updated_by_id = self.actor.id
         self.session.add(row)
         await self.session.flush()

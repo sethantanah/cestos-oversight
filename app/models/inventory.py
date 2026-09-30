@@ -58,8 +58,15 @@ class UnitOfMeasure(InventoryRecord, ArchiveMixin):
 
 class Supplier(InventoryRecord, ArchiveMixin):
     __tablename__ = "suppliers"
-    __table_args__ = (UniqueConstraint("organization_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name"),
+        UniqueConstraint("organization_id", "supplier_number", name="uq_suppliers_org_supplier_number"),
+    )
     name: Mapped[str] = mapped_column(String(200))
+    supplier_number: Mapped[str | None] = mapped_column(String(50))
+    bank_account_type: Mapped[str | None] = mapped_column(String(40))
+    payment_method: Mapped[str | None] = mapped_column(String(40))
+    bank_account_details: Mapped[str | None] = mapped_column(Text)
     contact_name: Mapped[str | None] = mapped_column(String(150))
     email: Mapped[str | None] = mapped_column(String(320))
     phone: Mapped[str | None] = mapped_column(String(50))

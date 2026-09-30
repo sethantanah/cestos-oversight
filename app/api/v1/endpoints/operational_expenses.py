@@ -24,6 +24,7 @@ from app.schemas.operational_expenses import OperationalExpenseCreate, Operation
 from app.services.field_notifications import emit_event
 from app.services.notification_schedules import emit_configured_event
 from app.services.audit import record_audit
+from app.services.vendors import ensure_vendor
 
 router = APIRouter(prefix="/operational-expenses", tags=["Operational expenses"])
 
@@ -160,13 +161,23 @@ async def create_expense(
         if not payee:
             raise HTTPException(404, "Selected payee was not found")
         payee.name, payee.phone, payee.bank_account_details = body.pay_to_name, body.pay_to_phone, body.bank_account_details
+        payee.payment_method = body.payment_method
     else:
         payee = await session.scalar(select(OperationalPayee).where(OperationalPayee.organization_id == actor.organization_id, func.lower(OperationalPayee.name) == body.pay_to_name.lower(), OperationalPayee.phone == body.pay_to_phone, OperationalPayee.bank_account_details == body.bank_account_details))
         if payee is None:
-            payee = OperationalPayee(organization_id=actor.organization_id, created_by_id=actor.id, name=body.pay_to_name, phone=body.pay_to_phone, bank_account_details=body.bank_account_details)
+            payee = OperationalPayee(organization_id=actor.organization_id, created_by_id=actor.id, name=body.pay_to_name, phone=body.pay_to_phone, bank_account_details=body.bank_account_details, payment_method=body.payment_method)
             session.add(payee)
             await session.flush()
         payee_id = payee.id
+    await ensure_vendor(
+        session,
+        actor.organization_id,
+        actor.id,
+        body.pay_to_name,
+        phone=body.pay_to_phone,
+        bank_account_details=body.bank_account_details,
+        payment_method=body.payment_method if body.payment_method in {"BANK_TRANSFER", "MOBILE_MONEY", "CASH"} else None,
+    )
     item_rows = []
     calculated = Decimal("0")
     for item in body.items:

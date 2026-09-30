@@ -206,6 +206,7 @@ class OperationalPayee(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixin,
     name: Mapped[str] = mapped_column(String(200))
     phone: Mapped[str | None] = mapped_column(String(50))
     bank_account_details: Mapped[str | None] = mapped_column(Text)
+    payment_method: Mapped[str | None] = mapped_column(String(40))
     is_active: Mapped[bool] = mapped_column(default=True, server_default="true")
 
 
