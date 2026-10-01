@@ -64,7 +64,7 @@ class Supplier(InventoryRecord, ArchiveMixin):
     )
     name: Mapped[str] = mapped_column(String(200))
     supplier_number: Mapped[str | None] = mapped_column(String(50))
-    bank_account_type: Mapped[str | None] = mapped_column(String(40))
+    bank_account_type: Mapped[str | None] = mapped_column(String(100))
     payment_method: Mapped[str | None] = mapped_column(String(40))
     bank_account_details: Mapped[str | None] = mapped_column(Text)
     contact_name: Mapped[str | None] = mapped_column(String(150))

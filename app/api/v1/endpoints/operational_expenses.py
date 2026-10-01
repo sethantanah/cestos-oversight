@@ -8,13 +8,14 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.core.dependencies import get_current_active_user, request_storage
 from app.db.session import get_session
 from app.models import Role, User
+from app.models.employee import Employee
 from app.models.inventory import InventoryItem
 from app.models.procurement import PoStatus, PurchaseOrder, PurchaseOrderItem
 from app.models.hr import Notification
@@ -69,7 +70,20 @@ async def list_payees(actor: User = Depends(get_current_active_user), session: A
 @router.get("")
 async def list_expenses(actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session)):
     finance = await is_finance(session, actor)
-    query = select(OperationalExpense, User, PurchaseOrder.po_number).join(User, OperationalExpense.submitted_by_id == User.id, isouter=True).outerjoin(PurchaseOrder, OperationalExpense.purchase_order_id == PurchaseOrder.id).where(OperationalExpense.organization_id == actor.organization_id)
+    query = (
+        select(OperationalExpense, User, PurchaseOrder.po_number, Employee.job_title, Employee.department)
+        .join(User, OperationalExpense.submitted_by_id == User.id, isouter=True)
+        .outerjoin(
+            Employee,
+            and_(
+                Employee.user_id == User.id,
+                Employee.organization_id == OperationalExpense.organization_id,
+                Employee.archived_at.is_(None),
+            ),
+        )
+        .outerjoin(PurchaseOrder, OperationalExpense.purchase_order_id == PurchaseOrder.id)
+        .where(OperationalExpense.organization_id == actor.organization_id)
+    )
     if not finance:
         query = query.where(OperationalExpense.submitted_by_id == actor.id)
     records = (await session.execute(query.order_by(OperationalExpense.created_at.desc()))).all()
@@ -82,7 +96,7 @@ async def list_expenses(actor: User = Depends(get_current_active_user), session:
     for payment in payment_rows:
         payments_by_expense.setdefault(payment.expense_id, []).append(payment)
     res = []
-    for exp, submitter, purchase_order_number in records:
+    for exp, submitter, purchase_order_number, submitter_job_title, submitter_department in records:
         data = OperationalExpenseRead.model_validate(exp).model_dump(mode="json")
         payments = payments_by_expense.get(exp.id, [])
         paid_amount = sum((p.amount for p in payments), Decimal("0"))
@@ -115,11 +129,13 @@ async def list_expenses(actor: User = Depends(get_current_active_user), session:
         if submitter:
             data["submitted_by_name"] = f"{submitter.first_name} {submitter.last_name}".strip()
             data["submitted_by_email"] = submitter.email
-            data["submitted_by_position"] = "Operations Director" if submitter.is_superuser else f"{submitter.portal_type.replace('_', ' ').title()} Administrator"
+            data["submitted_by_position"] = (
+                submitter_job_title or submitter_department or "Position not specified"
+            )
         else:
             data["submitted_by_name"] = "Operations Staff"
             data["submitted_by_email"] = actor.email
-            data["submitted_by_position"] = "Field Administrator"
+            data["submitted_by_position"] = "Position not specified"
         res.append(data)
     return res
 

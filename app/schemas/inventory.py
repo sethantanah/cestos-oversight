@@ -59,7 +59,7 @@ class UnitOfMeasureUpdate(InventoryInput):
 class SupplierCreate(InventoryInput):
     name: str = Field(..., max_length=200, min_length=1)
     supplier_number: str | None = Field(None, max_length=50)
-    bank_account_type: str | None = Field(None, pattern="^(SPARE_PART|FUEL|FOREIGN_PURCHASE|SERVICE_RENDERED|TRANSPORTATION)$")
+    bank_account_type: str | None = Field(None, pattern="^(SPARE_PART|FUEL|FOREIGN_PURCHASE|SERVICE_RENDERED|TRANSPORTATION|TELEPHONY_EXPENSES|INTERNET_EXPENSES|CAR_RENTAL_EXPENSES|EQUIPMENT_RENTAL_EXPENSES|FUEL_OIL|REPAIRS_AND_MAINTENANCE|PROFESSIONAL_FEES|LEGAL_SERVICES|ADMINISTRATION_SERVICES|RENT_EXPENSE|DRILL_CONSUMABLES|DRILL_CONSUMBLES|BUILDING_SUPPLIES|GENERATOR_MAINTENANCE|PLUMBING|ELECTRICAL|UTILITIES|GENERATOR|COMMUNITY_DEVELOPMENT)$")
     payment_method: str | None = Field(None, pattern="^(BANK_TRANSFER|MOBILE_MONEY|CASH)$")
     bank_account_details: str | None = Field(None, max_length=1000)
     contact_name: str | None = Field(None, max_length=150)
@@ -74,7 +74,7 @@ class SupplierCreate(InventoryInput):
 class SupplierUpdate(InventoryInput):
     name: str | None = Field(None, max_length=200, min_length=1)
     supplier_number: str | None = Field(None, max_length=50)
-    bank_account_type: str | None = Field(None, pattern="^(SPARE_PART|FUEL|FOREIGN_PURCHASE|SERVICE_RENDERED|TRANSPORTATION)$")
+    bank_account_type: str | None = Field(None, pattern="^(SPARE_PART|FUEL|FOREIGN_PURCHASE|SERVICE_RENDERED|TRANSPORTATION|TELEPHONY_EXPENSES|INTERNET_EXPENSES|CAR_RENTAL_EXPENSES|EQUIPMENT_RENTAL_EXPENSES|FUEL_OIL|REPAIRS_AND_MAINTENANCE|PROFESSIONAL_FEES|LEGAL_SERVICES|ADMINISTRATION_SERVICES|RENT_EXPENSE|DRILL_CONSUMABLES|DRILL_CONSUMBLES|BUILDING_SUPPLIES|GENERATOR_MAINTENANCE|PLUMBING|ELECTRICAL|UTILITIES|GENERATOR|COMMUNITY_DEVELOPMENT)$")
     payment_method: str | None = Field(None, pattern="^(BANK_TRANSFER|MOBILE_MONEY|CASH)$")
     bank_account_details: str | None = Field(None, max_length=1000)
     contact_name: str | None = Field(None, max_length=150)
