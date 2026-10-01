@@ -415,7 +415,7 @@ async def matching_alerts(session, schedule, today):
         ).all()
         for expense in rows:
             alerts.append((str(expense.id),
-                f"Expense {expense.expense_number} for {expense.total_cost} is awaiting finance payment; "
+                f"Expense {expense.expense_number} for ${float(expense.total_cost):,.2f} is awaiting finance payment; "
                 f"submitted on {expense.expense_date.isoformat()} for {expense.pay_to_name}."))
     elif rule == "HSE_CORRECTIVE_ACTION_DUE":
         rows = (

@@ -265,20 +265,20 @@ async def create_expense(
     session.add(row)
     await session.flush()
     await emit_event(session, actor.organization_id, await finance_recipients(session, actor.organization_id),
-        f"operational-expense:{row.id}:submitted", f"Expense {row.expense_number} was submitted to Finance by {actor.first_name} {actor.last_name} for {row.total_cost}.",
+        f"operational-expense:{row.id}:submitted", f"Expense {row.expense_number} was submitted to Finance by {actor.first_name} {actor.last_name} for ${float(row.total_cost):,.2f}.",
         "FINANCE", "EXPENSE_SUBMITTED_TO_FINANCE", action_url=expense_action_urls(row.id))
     await emit_configured_event(
         session,
         actor.organization_id,
         "FINANCE_OPERATIONAL_EXPENSE_THRESHOLD",
         f"operational-expense:{row.id}:threshold",
-        f"Operational expense {row.expense_number} for {row.total_cost} was submitted by {actor.email or actor.id} to {row.pay_to_name}.",
+        f"Operational expense {row.expense_number} for ${float(row.total_cost):,.2f} was submitted by {actor.email or actor.id} to {row.pay_to_name}.",
         row.total_cost,
         action_url=expense_action_urls(row.id),
     )
     await emit_event(
         session, actor.organization_id, {actor.id}, f"operational-expense:{row.id}:raised",
-        f"Expense {row.expense_number} was raised and submitted to Finance for {row.total_cost}.",
+        f"Expense {row.expense_number} was raised and submitted to Finance for ${float(row.total_cost):,.2f}.",
         "FINANCE", "EXPENSE_RAISED", action_url=expense_action_urls(row.id, row.purchase_order_id),
     )
     await session.commit()
@@ -412,10 +412,10 @@ async def complete_expense(expense_id: uuid.UUID, amount: Decimal = Form(...), p
     fully_paid = balance_due == 0
     row.status = "COMPLETED" if fully_paid else "PARTIALLY_PAID"
     if fully_paid:
-        message = f"Your operational expense {row.expense_number} has been paid in full. The latest payment receipt is available."
+        message = f"Your operational expense {row.expense_number} has been paid in full (${float(row.total_cost):,.2f}). The latest payment receipt is available."
         event_key = f"operational-expense:{row.id}:completed"
     else:
-        message = f"Finance paid {amount} toward operational expense {row.expense_number}; remaining balance: {balance_due}."
+        message = f"Finance paid ${float(amount):,.2f} toward operational expense {row.expense_number}; remaining balance: ${float(balance_due):,.2f}."
         event_key = f"operational-expense:{row.id}:payment:{payment.id}"
     await emit_event(session, actor.organization_id, {row.submitted_by_id}, event_key, message, "FINANCE", "FINANCE_EXPENSE_PAYMENT",
         action_url=expense_action_urls(row.id, row.purchase_order_id))
