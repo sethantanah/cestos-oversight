@@ -22,7 +22,7 @@ router = APIRouter(prefix="/finance/vendors", tags=["Finance vendors"])
 class VendorInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     supplier_number: str | None = Field(default=None, max_length=50)
-    bank_account_type: str | None = Field(default=None, pattern="^(SPARE_PART|FUEL|FOREIGN_PURCHASE)$")
+    bank_account_type: str | None = Field(default=None, pattern="^(SPARE_PART|FUEL|FOREIGN_PURCHASE|SERVICE_RENDERED|TRANSPORTATION)$")
     payment_method: str | None = Field(default=None, pattern="^(BANK_TRANSFER|MOBILE_MONEY|CASH)$")
     bank_account_details: str | None = Field(default=None, max_length=1000)
 
