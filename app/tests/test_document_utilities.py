@@ -45,6 +45,39 @@ def test_validate_schema_value_reports_missing_and_invalid_values():
     assert len(errors) == 3
 
 
+def test_normalize_schema_value_repairs_null_typed_fields_recursively():
+    schema = {
+        "type": "object",
+        "required": ["currency", "items"],
+        "properties": {
+            "currency": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["description", "unit_price"],
+                    "properties": {
+                        "description": {"type": "string"},
+                        "unit_price": {"type": "number"},
+                    },
+                },
+            },
+        },
+    }
+
+    normalized, changed = document_utilities._normalize_schema_value(
+        {"currency": None, "items": [{"description": None, "unit_price": None}]},
+        schema,
+    )
+
+    assert changed is True
+    assert normalized == {
+        "currency": "",
+        "items": [{"description": "", "unit_price": 0}],
+    }
+    assert document_utilities.validate_schema_value(normalized, schema) == []
+
+
 def test_fill_document_schema_returns_classification_tag_and_schema_data(monkeypatch):
     schema = {
         "type": "object",
