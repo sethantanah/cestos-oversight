@@ -87,7 +87,7 @@ async def list_expenses(actor: User = Depends(get_current_active_user), session:
     if not finance:
         query = query.where(OperationalExpense.submitted_by_id == actor.id)
     records = (await session.execute(query.order_by(OperationalExpense.created_at.desc()))).all()
-    expense_ids = [exp.id for exp, _, _ in records]
+    expense_ids = [row[0].id for row in records]
     payment_rows = (await session.scalars(select(OperationalExpensePayment).where(
         OperationalExpensePayment.organization_id == actor.organization_id,
         OperationalExpensePayment.expense_id.in_(expense_ids) if expense_ids else False,
