@@ -16,7 +16,7 @@ from app.core.dependencies import get_current_active_user, request_storage
 from app.db.session import get_session
 from app.models import Role, User
 from app.models.employee import Employee
-from app.models.inventory import InventoryItem
+from app.models.inventory import InventoryItem, Supplier
 from app.models.procurement import PoStatus, PurchaseOrder, PurchaseOrderItem
 from app.models.hr import Notification
 from app.models.operational_logs import OperationalExpense, OperationalExpensePayment, OperationalPayee
@@ -64,8 +64,31 @@ async def finance_recipients(session: AsyncSession, organization_id: uuid.UUID) 
 
 @router.get("/payees")
 async def list_payees(actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session)):
-    rows = (await session.scalars(select(OperationalPayee).where(OperationalPayee.organization_id == actor.organization_id, OperationalPayee.is_active.is_(True)).order_by(OperationalPayee.name))).all()
-    return rows
+    query = (
+        select(OperationalPayee, Supplier.bank_account_type)
+        .outerjoin(
+            Supplier,
+            and_(
+                Supplier.organization_id == actor.organization_id,
+                func.lower(func.trim(Supplier.name)) == func.lower(func.trim(OperationalPayee.name)),
+            ),
+        )
+        .where(OperationalPayee.organization_id == actor.organization_id, OperationalPayee.is_active.is_(True))
+        .order_by(OperationalPayee.name)
+    )
+    results = await session.execute(query)
+    res = []
+    for payee, vendor_type in results.all():
+        res.append({
+            "id": str(payee.id),
+            "name": payee.name,
+            "phone": payee.phone,
+            "bank_account_details": payee.bank_account_details,
+            "payment_method": payee.payment_method,
+            "bank_account_type": vendor_type or getattr(payee, "bank_account_type", None),
+            "is_active": payee.is_active,
+        })
+    return res
 
 @router.get("")
 async def list_expenses(actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session)):
