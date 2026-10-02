@@ -221,6 +221,7 @@ class OperationalExpense(UUIDMixin, OrganizationMixin, TimestampMixin, ActorMixi
     bank_account_details: Mapped[str | None] = mapped_column(Text)
     expense_date: Mapped[date] = mapped_column()
     payment_method: Mapped[str] = mapped_column(String(40))
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     items: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     total_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     status: Mapped[str] = mapped_column(String(30), default="SUBMITTED", index=True)

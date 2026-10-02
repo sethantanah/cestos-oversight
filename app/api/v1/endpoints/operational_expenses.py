@@ -203,6 +203,19 @@ async def create_expense(
         calculated += line_total
         item_rows.append({**item.model_dump(mode="json"), "total": str(line_total)})
     total = body.total_cost if body.manual_total and body.total_cost is not None else calculated
+
+    if not item_rows and total > Decimal("0"):
+        cat_name = body.category or (payee.bank_account_type if payee and payee.bank_account_type else None) or "Operational Expense"
+        display_name = cat_name.replace("_", " ").title() if "_" in cat_name else cat_name
+        item_rows = [{
+            "inventory_item_id": None,
+            "name": display_name,
+            "description": display_name,
+            "quantity": "1",
+            "unit_cost": str(total),
+            "total": str(total)
+        }]
+
     if purchase_order:
         old_po_items = [
             {
@@ -274,7 +287,7 @@ async def create_expense(
         expense_number=f"OPEX-{datetime.now(UTC):%Y%m%d}-{uuid.uuid4().hex[:6].upper()}",
         payee_id=payee_id, pay_to_name=body.pay_to_name, pay_to_phone=body.pay_to_phone,
         bank_account_details=body.bank_account_details, expense_date=body.expense_date,
-        payment_method=body.payment_method, items=item_rows, total_cost=total, status="SUBMITTED",
+        payment_method=body.payment_method, category=body.category, items=item_rows, total_cost=total, status="SUBMITTED",
         invoice_path=stored.relative_path, invoice_name=stored.filename, invoice_mime_type=stored.mime_type,
         invoice_size_bytes=stored.size_bytes, extraction_status="PENDING",
     )
@@ -320,7 +333,7 @@ async def update_expense(
     if row.submitted_by_id != actor.id:
         raise HTTPException(403, "Only the submitter can edit this expense")
     changes = body.model_dump(exclude_unset=True)
-    for field in ("pay_to_name", "expense_date", "payment_method"):
+    for field in ("pay_to_name", "expense_date", "payment_method", "category"):
         if field in changes and changes[field] is not None:
             setattr(row, field, changes[field])
     if "total_cost" in changes and changes["total_cost"] is not None:

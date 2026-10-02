@@ -20,6 +20,7 @@ class OperationalExpenseCreate(BaseModel):
     bank_account_details: str | None = Field(default=None, max_length=1000)
     expense_date: date
     payment_method: Literal["CASH", "BANK_TRANSFER", "MOBILE_MONEY", "CARD", "OTHER"]
+    category: str | None = Field(default=None, max_length=100)
     items: list[ExpenseItem] = Field(default_factory=list, max_length=100)
     total_cost: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
     manual_total: bool = False
@@ -29,6 +30,7 @@ class OperationalExpenseUpdate(BaseModel):
     expense_date: date | None = None
     total_cost: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
     payment_method: Literal["CASH", "BANK_TRANSFER", "MOBILE_MONEY", "CARD", "OTHER"] | None = None
+    category: str | None = Field(default=None, max_length=100)
     invoice_name: str | None = Field(default=None, max_length=255)
 
 class OperationalExpenseRead(BaseModel):
@@ -44,6 +46,7 @@ class OperationalExpenseRead(BaseModel):
     bank_account_details: str | None
     expense_date: date
     payment_method: str
+    category: str | None = None
     items: list[dict[str, Any]]
     total_cost: Decimal
     paid_amount: Decimal = Decimal("0")
