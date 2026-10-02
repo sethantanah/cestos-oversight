@@ -165,7 +165,7 @@ async def list_expenses(actor: User = Depends(get_current_active_user), session:
 @router.post("", response_model=OperationalExpenseRead, status_code=201)
 async def create_expense(
     request: Request, background: BackgroundTasks,
-    expense_json: str = Form(...), invoice: UploadFile = File(...),
+    expense_json: str = Form(...), invoice: UploadFile | None = File(None),
     actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session),
     storage=Depends(request_storage),
 ):
@@ -187,13 +187,14 @@ async def create_expense(
             raise HTTPException(409, "Only an approved purchase order can be linked to an expense")
         if not await is_finance(session, actor) and purchase_order.created_by_id != actor.id:
             raise HTTPException(403, "Only the purchase order submitter can link it to an expense")
-    data = await invoice.read(storage.max_bytes + 1)
-    if not data:
-        raise HTTPException(422, "Attach a non-empty invoice or supporting document")
-    try:
-        stored = await run_in_threadpool(storage.save, f"documents/{actor.organization_id}/operational-expenses", data, invoice.filename or "invoice.pdf", invoice.content_type)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    stored = None
+    if invoice and invoice.filename:
+        data = await invoice.read(storage.max_bytes + 1)
+        if data:
+            try:
+                stored = await run_in_threadpool(storage.save, f"documents/{actor.organization_id}/operational-expenses", data, invoice.filename, invoice.content_type)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
     payee_id = body.payee_id
     if payee_id:
         payee = await session.scalar(select(OperationalPayee).where(OperationalPayee.id == payee_id, OperationalPayee.organization_id == actor.organization_id, OperationalPayee.is_active.is_(True)))
@@ -311,8 +312,8 @@ async def create_expense(
         payee_id=payee_id, pay_to_name=body.pay_to_name, pay_to_phone=body.pay_to_phone,
         bank_account_details=body.bank_account_details, expense_date=body.expense_date,
         payment_method=body.payment_method, category=body.category, items=item_rows, total_cost=total, status="SUBMITTED",
-        invoice_path=stored.relative_path, invoice_name=stored.filename, invoice_mime_type=stored.mime_type,
-        invoice_size_bytes=stored.size_bytes, extraction_status="PENDING",
+        invoice_path=stored.relative_path if stored else None, invoice_name=stored.filename if stored else None, invoice_mime_type=stored.mime_type if stored else None,
+        invoice_size_bytes=stored.size_bytes if stored else None, extraction_status="PENDING" if stored else "COMPLETED",
     )
     session.add(row)
     await session.flush()
@@ -337,7 +338,8 @@ async def create_expense(
     await session.refresh(row)
     if purchase_order:
         row.purchase_order_number = purchase_order.po_number
-    background.add_task(extract_invoice_safely, request.app.state.session_factory, storage, row.id, actor.organization_id, stored.relative_path, stored.filename)
+    if stored:
+        background.add_task(extract_invoice_safely, request.app.state.session_factory, storage, row.id, actor.organization_id, stored.relative_path, stored.filename)
     return row
 
 @router.patch("/{expense_id}", response_model=OperationalExpenseRead)
