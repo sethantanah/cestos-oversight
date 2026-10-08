@@ -200,3 +200,5 @@ from app.models.control_tower import (  # noqa: F401
 )
 
 
+
+from app.models.workbook_share import WorkbookShare  # noqa: F401

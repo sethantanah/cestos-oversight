@@ -128,3 +128,9 @@ router.add_api_route("/incidents/{incident_id}", hse.legacy_get_incident, method
 router.add_api_route("/incidents/{incident_id}", hse.legacy_update_incident, methods=["PATCH"], include_in_schema=False)
 router.include_router(procurement.router)
 router.include_router(control_tower.router)
+
+from app.api.v1.endpoints import workbook_connections
+router.include_router(workbook_connections.router)
+
+from app.api.v1.endpoints import workbook_shares
+router.include_router(workbook_shares.router)

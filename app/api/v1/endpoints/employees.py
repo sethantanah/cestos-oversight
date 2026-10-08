@@ -1230,6 +1230,7 @@ def _timesheet_read(row: EmployeeTimesheet, employee: Employee | None) -> dict:
         "employee_number": employee.employee_number if employee else None,
         "project_id": str(row.project_id) if row.project_id else None,
         "project_name": row.project_name,
+        "scope_project_id": str(row.scope_project_id) if row.scope_project_id else None,
         "period": row.period_start.strftime("%Y-%m"),
         "period_start": row.period_start.isoformat(),
         "site_name": row.site_name,
@@ -1248,30 +1249,30 @@ async def _list_employee_timesheets(
     actor: User = Depends(timesheet_reader),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    selected_period = _timesheet_period(period)
-    if period is None:
-        latest_period = await session.scalar(
-            select(func.max(EmployeeTimesheet.period_start)).where(
-                EmployeeTimesheet.organization_id == actor.organization_id
-            )
-        )
-        if latest_period:
-            selected_period = latest_period
-    query = select(EmployeeTimesheet)
+    filters = [EmployeeTimesheet.organization_id == actor.organization_id]
     if str(actor.portal_type or "").upper() == "FIELD_ADMIN":
-        if not project_id:
-            raise ValidationError("Select a project to view its timesheets")
         from app.services.field_equipment import assigned_project_ids
-        if not await session.scalar(assigned_project_ids(actor).where(Project.id == project_id)):
-            raise ForbiddenError("You can only view timesheets for a project assigned to you")
-        query = query.where(
-            (EmployeeTimesheet.scope_project_id == project_id)
+        allowed_projects = assigned_project_ids(actor)
+        if project_id:
+            allowed_projects = allowed_projects.where(Project.id == project_id)
+            if not await session.scalar(allowed_projects):
+                raise ForbiddenError("You can only view timesheets for a project assigned to you")
+        filters.append(
+            EmployeeTimesheet.scope_project_id.in_(allowed_projects)
             | EmployeeTimesheet.employee_id.in_(select(EmployeeAssignment.employee_id).where(
                 EmployeeAssignment.organization_id == actor.organization_id,
-                EmployeeAssignment.project_id == project_id,
+                EmployeeAssignment.project_id.in_(allowed_projects),
                 EmployeeAssignment.status == "ACTIVE",
             ))
         )
+    selected_period = _timesheet_period(period)
+    if period is None:
+        latest_period = await session.scalar(
+            select(func.max(EmployeeTimesheet.period_start)).where(*filters)
+        )
+        if latest_period:
+            selected_period = latest_period
+    query = select(EmployeeTimesheet).where(*filters)
     rows = list((await session.scalars(
         query
         .options(selectinload(EmployeeTimesheet.days))

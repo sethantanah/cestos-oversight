@@ -316,11 +316,15 @@ async def upload(
     identifier = uuid.uuid4()
     existing_import = None
     if source_type and source_type.endswith("_import"):
-        existing_import = await session.scalar(select(D).where(
+        import_filters = [
             D.organization_id == actor.organization_id,
             D.source_type == source_type,
             D.source_id == source_id,
-        ))
+        ]
+        # Maintenance imports retain the original and the worksheet CSV separately.
+        if source_type != "employee_timesheet_import":
+            import_filters.append(D.file_name == stored.filename)
+        existing_import = await session.scalar(select(D).where(*import_filters).limit(1))
     row = existing_import or D(
         id=identifier,
         organization_id=actor.organization_id,
@@ -474,3 +478,21 @@ async def reindex(
     audit(session, actor, row, "document.reindex_requested")
     await session.commit()
     return {"status": "PENDING"}
+
+
+@router.delete("/{identifier}/workbook")
+async def delete_workbook(identifier: uuid.UUID, actor: User = Depends(get_current_active_user), session: AsyncSession = Depends(get_session)):
+    """Remove all versions of one workbook from the library, retaining audit/storage history."""
+    row = await get_document(session, actor, identifier)
+    manage(row, actor)
+    key = next((tag for tag in row.tags if tag.startswith("wb-")), None)
+    if row.category != "Field Workbooks" or not key:
+        raise ValidationError("This document is not a workbook")
+    versions = list((await session.scalars(select(D).where(D.organization_id == actor.organization_id, D.category == "Field Workbooks", D.tags.contains([key]), D.is_active.is_(True)))).all())
+    for version in versions:
+        manage(version, actor)
+    for version in versions:
+        audit(session, actor, version, "workbook.deleted")
+        version.is_active = False
+    await session.commit()
+    return {"deleted_versions": len(versions)}
