@@ -7,7 +7,7 @@ import re
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,22 +114,22 @@ async def list_shares(workbook_id:str=Query(...),actor:User=Depends(get_current_
     return [{"id":str(row.id),"expires_at":row.expires_at,"editors":len(row.editor_ids)} for row in rows]
 
 @router.delete("/{identifier}")
-async def revoke(identifier:Annotated[uuid.UUID,Path()],actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
+async def revoke(identifier:uuid.UUID=Path(...),actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
     row=await session.scalar(select(WorkbookShare).where(WorkbookShare.id==identifier,WorkbookShare.owner_id==actor.id,WorkbookShare.organization_id==actor.organization_id).with_for_update())
     if row is None:raise HTTPException(404,"Share not found")
     row.revoked=True;audit(session,actor,row,"workbook_share.revoked");await session.commit();return {"revoked":True}
 
 @router.get("/{token}")
-async def read(token:Annotated[str,Path()],response:Response,session:AsyncSession=Depends(get_session)):
+async def read(token:str=Path(...),response:Response=Response(),session:AsyncSession=Depends(get_session)):
     row=await lookup(session,token);response.headers["Cache-Control"]="no-store";response.headers["Referrer-Policy"]="no-referrer"
     return {"workbook":row.workbook,"revision":row.revision}
 
 @router.get("/{token}/access")
-async def access(token:Annotated[str,Path()],actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
+async def access(token:str=Path(...),actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
     row=await lookup(session,token);return {"can_edit":can_edit(row,actor)}
 
 @router.put("/{token}")
-async def update(token:Annotated[str,Path()],payload:ShareUpdate,actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
+async def update(token:str=Path(...),payload:ShareUpdate=Body(...),actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
     row=await lookup(session,token,True)
     if not can_edit(row,actor):raise HTTPException(403,"This link is read-only for your account")
     if row.revision!=payload.revision:raise HTTPException(409,"Another editor saved a newer version. Download your backup, reload and reconcile your changes.")
