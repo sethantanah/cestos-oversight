@@ -6,3 +6,16 @@
 .mypy_cache
 .ruff_cache
 app/tests
+
+# Local secrets, data, and development artifacts are never build inputs.
+.env.*
+.dependency-check-venv
+.test-postgres
+.document-index
+.ui-check
+.asset-ui
+.frontend-integration
+.test-document-ui-storage
+storage
+.agents
+.idea
