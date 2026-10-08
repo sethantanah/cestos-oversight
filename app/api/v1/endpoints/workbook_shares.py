@@ -6,7 +6,7 @@ import re
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,7 +108,7 @@ async def create(payload:ShareCreate,actor:User=Depends(get_current_active_user)
     return {"id":str(row.id),"token":token,"expires_at":row.expires_at}
 
 @router.get("")
-async def list_shares(workbook_id:str,actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
+async def list_shares(workbook_id:str=Query(...),actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
     rows=(await session.scalars(select(WorkbookShare).where(WorkbookShare.owner_id==actor.id,WorkbookShare.organization_id==actor.organization_id,WorkbookShare.workbook_id==workbook_id,WorkbookShare.revoked.is_(False)))).all()
     return [{"id":str(row.id),"expires_at":row.expires_at,"editors":len(row.editor_ids)} for row in rows]
 
