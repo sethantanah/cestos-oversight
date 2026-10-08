@@ -119,14 +119,14 @@ async def revoke(identifier:uuid.UUID=Path(...),actor:User=Depends(get_current_a
     if row is None:raise HTTPException(404,"Share not found")
     row.revoked=True;audit(session,actor,row,"workbook_share.revoked");await session.commit();return {"revoked":True}
 
+@router.get("/{token}/access")
+async def access(token:str=Path(...),actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
+    row=await lookup(session,token);return {"can_edit":can_edit(row,actor)}
+
 @router.get("/{token}")
 async def read(token:str=Path(...),response:Response=Response(),session:AsyncSession=Depends(get_session)):
     row=await lookup(session,token);response.headers["Cache-Control"]="no-store";response.headers["Referrer-Policy"]="no-referrer"
     return {"workbook":row.workbook,"revision":row.revision}
-
-@router.get("/{token}/access")
-async def access(token:str=Path(...),actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
-    row=await lookup(session,token);return {"can_edit":can_edit(row,actor)}
 
 @router.put("/{token}")
 async def update(token:str=Path(...),payload:ShareUpdate=Body(...),actor:User=Depends(get_current_active_user),session:AsyncSession=Depends(get_session)):
