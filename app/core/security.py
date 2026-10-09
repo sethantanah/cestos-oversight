@@ -31,7 +31,7 @@ def token_hash(raw: str) -> str:
 
 
 def create_access_token(
-    user_id: uuid.UUID, organization_id: uuid.UUID, settings: Settings, token_version: int = 0
+    user_id: uuid.UUID, organization_id: uuid.UUID, settings: Settings, token_version: int = 0, expires_at: datetime | None = None
 ) -> str:
     now = datetime.now(UTC)
     return jwt.encode(
@@ -41,7 +41,7 @@ def create_access_token(
             "type": "access",
             "ver": token_version,
             "iat": now,
-            "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
+            "exp": min(now + timedelta(minutes=settings.access_token_expire_minutes), expires_at) if expires_at else now + timedelta(minutes=settings.access_token_expire_minutes),
             "jti": str(uuid.uuid4()),
             "iss": "cestos",
             "aud": "cestos-api",

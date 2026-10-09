@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     jwt_secret_key: SecretStr
     jwt_algorithm: Literal["HS256"] = "HS256"
     access_token_expire_minutes: int = Field(default=15, ge=1, le=60)
+    login_session_hours: int = Field(default=72, ge=1, le=2160)
     refresh_token_expire_days: int = Field(default=30, ge=1, le=90)
     redis_url: str | None = None
     db_pool_size: int = Field(default=20, ge=5, le=100)

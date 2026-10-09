@@ -22,24 +22,25 @@ class AuthService:
         self.settings = settings
         self.metadata = request_metadata(request)
 
-    def issue_tokens(self, user: User) -> TokenResponse:
+    def issue_tokens(self, user: User, session_expires_at: datetime | None = None) -> TokenResponse:
         now = datetime.now(UTC)
+        deadline = session_expires_at or now + timedelta(hours=self.settings.login_session_hours)
         raw = secrets.token_urlsafe(48)
         self.session.add(
             RefreshToken(
                 user_id=user.id,
                 token_hash=token_hash(raw),
                 created_at=now,
-                expires_at=now + timedelta(days=self.settings.refresh_token_expire_days),
+                expires_at=deadline,
                 **self.metadata,
             )
         )
         return TokenResponse(
             access_token=create_access_token(
-                user.id, user.organization_id, self.settings, user.token_version
+                user.id, user.organization_id, self.settings, user.token_version, expires_at=deadline
             ),
             refresh_token=raw,
-            expires_in=self.settings.access_token_expire_minutes * 60,
+            expires_in=max(0, min(self.settings.access_token_expire_minutes * 60, int((deadline-now).total_seconds()))),
         )
 
     async def login(self, body: LoginRequest) -> TokenResponse:
@@ -85,6 +86,9 @@ class AuthService:
             now = datetime.now(UTC)
             if token is None or token.revoked_at is not None or token.expires_at <= now:
                 raise AuthenticationError("Invalid or expired refresh token")
+            deadline = min(token.expires_at, token.created_at + timedelta(hours=self.settings.login_session_hours))
+            if deadline <= now:
+                raise AuthenticationError("Login session expired. Sign in again.")
             user = await self.session.get(User, token.user_id)
             if (
                 user is None
@@ -95,7 +99,7 @@ class AuthService:
                 raise AuthenticationError("User is unavailable")
             await require_active_organization(self.session, user.organization_id)
             token.revoked_at = now
-            result = self.issue_tokens(user)
+            result = self.issue_tokens(user, deadline)
         return result
 
     async def logout(self, raw: str) -> None:
