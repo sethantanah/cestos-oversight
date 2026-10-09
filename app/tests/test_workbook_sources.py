@@ -51,3 +51,34 @@ class SourcePermissions(unittest.IsolatedAsyncioTestCase):
         denied=AsyncMock(side_effect=ForbiddenError('Denied'))
         with patch('app.api.v1.endpoints.workbook_connections.require_permission',return_value=denied):
             self.assertFalse(await read_permitted(router.routes[0].dependant,object(),object()))
+
+
+class WorkspaceCatalog(unittest.IsolatedAsyncioTestCase):
+    async def test_actions_require_permissions_and_a_readable_detail_route(self):
+        from unittest.mock import patch, AsyncMock
+        from types import SimpleNamespace
+        from app.api.v1.endpoints.workbook_connections import workspace
+        class ExampleCreate(BaseModel):
+            name:str
+        class ExampleUpdate(BaseModel):
+            name:str|None=None
+        router=APIRouter()
+        @router.get('/api/v1/examples',response_model=list[Row])
+        async def listing():pass
+        @router.get('/api/v1/examples/{id}',response_model=Row)
+        async def detail(id:str):pass
+        @router.post('/api/v1/examples',response_model=Row)
+        async def create(body:ExampleCreate):pass
+        @router.patch('/api/v1/examples/{id}',response_model=Row)
+        async def update(id:str,body:ExampleUpdate):pass
+        request=SimpleNamespace(app=SimpleNamespace(routes=router.routes))
+        with patch('app.api.v1.endpoints.workbook_connections.read_permitted',AsyncMock(return_value=True)):
+            result=await workspace(request,None,None)
+            self.assertEqual(result[0]['create']['method'],'POST')
+            self.assertEqual(result[0]['update']['method'],'PATCH')
+            self.assertEqual(result[0]['create']['schema']['required'],['name'])
+        with patch('app.api.v1.endpoints.workbook_connections.read_permitted',AsyncMock(return_value=False)):
+            self.assertEqual(await workspace(request,None,None),[])
+        request.app.routes=[route for route in router.routes if route.endpoint is not detail]
+        with patch('app.api.v1.endpoints.workbook_connections.read_permitted',AsyncMock(return_value=True)):
+            self.assertNotIn('update',(await workspace(request,None,None))[0])

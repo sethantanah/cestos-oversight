@@ -1,3 +1,4 @@
+from app.services.workbook_media import clean_workbook_media
 """Anyone with an unguessable link may read; only named active users may edit."""
 from typing import Annotated
 import hashlib
@@ -28,7 +29,7 @@ class ShareUpdate(BaseModel):
 
 def clean_workbook(value):
     # Public payloads exclude source Excel bytes, hidden sheets, and database mappings.
-    if len(json.dumps(value))>5_000_000:raise HTTPException(413,"Shared workbook exceeds 5 MB")
+    if len(json.dumps(value))>35_000_000:raise HTTPException(413,"Shared workbook exceeds 35 MB")
     if value.get("version")!=1 or not isinstance(value.get("id"),str) or len(value["id"])>100:raise HTTPException(422,"Invalid workbook")
     sheets=value.get("sheets")
     if not isinstance(sheets,list) or not 1<=len(sheets)<=30:raise HTTPException(422,"Invalid sheets")
@@ -108,7 +109,9 @@ def clean_workbook(value):
             settings[field]=safe
         clean.append({"id":sheet["id"],"name":sheet["name"][:31],"cells":rows,"widths":widths,"heights":heights,"merges":merges,"formats":safe_formats,"imported":True,**settings})
     if not clean:raise HTTPException(422,"No visible sheets to share")
-    return {"version":1,"id":value["id"],"name":str(value.get("name","Workbook"))[:250],"template":False,"sheets":clean}
+    try: extras=clean_workbook_media(value,clean)
+    except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+    return {"version":1,"id":value["id"],"name":str(value.get("name","Workbook"))[:250],"template":False,"sheets":clean,**extras}
 
 def digest(token):return hashlib.sha256(token.encode()).hexdigest()
 async def lookup(session,token,lock=False):

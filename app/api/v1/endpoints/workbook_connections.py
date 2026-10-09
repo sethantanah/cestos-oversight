@@ -21,10 +21,10 @@ class MappingRequest(BaseModel):
 async def catalog(request, actor, session):
     models={m.class_.__name__:m.class_ for m in Base.registry.mappers}
     result={}
-    for route in request.app.routes:
-        if not isinstance(route,APIRoute) or "POST" not in route.methods or "{" in route.path or not route.path.startswith("/api/v1/"): continue
-        if len(route.dependant.body_params)!=1: continue
-        schema=route.dependant.body_params[0].type_
+    for route in effective_api_routes(request.app.routes):
+        if not isinstance(getattr(route,'original_route',route),APIRoute) or "POST" not in route.methods or "{" in route.path or not route.path.startswith("/api/v1/"): continue
+        if len(route.dependant.body_params)!=1 or any(field.field_info.is_required() for field in route.dependant.query_params): continue
+        schema=route.dependant.body_params[0].field_info.annotation
         if not inspect.isclass(schema) or not issubclass(schema,BaseModel) or not schema.__name__.endswith("Create"): continue
         model=models.get(schema.__name__[:-6])
         if model is None or not hasattr(model,"organization_id") or model.__name__ in {"User","Role","Permission","Organization"}: continue
@@ -50,8 +50,14 @@ async def tables(request:Request, actor:User=Depends(get_current_active_user), s
     for path,(schema,model) in (await catalog(request,actor,session)).items():
         contract=schema.model_json_schema(); required=set(contract.get("required",[]))
         columns=[{"name":name,"schema":definition,"required":name in required,"nullable":model.__table__.c[name].nullable,"type":str(model.__table__.c[name].type)} for name,definition in contract.get("properties",{}).items()]
-        result.append({"id":path,"name":model.__tablename__,"columns":columns})
-    return result
+        result.append({"id":path,"name":model.__tablename__,"columns":columns,"validationAvailable":True})
+    known={entry["id"] for entry in result}
+    for route in effective_api_routes(request.app.routes):
+        source=readable_source(route)
+        if source and source['id'] not in known and await read_permitted(route.dependant,actor,session):
+            result.append({'id':source['id'],'name':source['name'],'validationAvailable':False,'columns':[{**column,'required':False,'nullable':True,'schema':{'type':column['type']}} for column in source['columns']]})
+            known.add(source['id'])
+    return sorted(result,key=lambda entry:entry['name'])
 
 @router.post("/preview")
 async def preview(body:MappingRequest, request:Request, actor:User=Depends(get_current_active_user), session:AsyncSession=Depends(get_session)):
@@ -60,6 +66,8 @@ async def preview(body:MappingRequest, request:Request, actor:User=Depends(get_c
     schema,model=entry
     if set(body.mapping)-set(schema.model_fields) or len(set(body.mapping.values()))!=len(body.mapping): raise HTTPException(422,"Map each sheet column to at most one supported database field")
     if any(i<0 or i>=100 for i in body.mapping.values()): raise HTTPException(422,"Invalid sheet column")
+    if any(len(row)>100 or any(len(value)>32767 for value in row) for row in body.rows): raise HTTPException(422,"Mapped records exceed cell limits")
+    if len(body.mapping)>100: raise HTTPException(422,"Map at most 100 fields")
     issues=[]; prepared=[]
     for index,row in enumerate(body.rows):
         if not any(value.strip() for value in row): continue
@@ -173,3 +181,65 @@ async def sources(request:Request, actor:User=Depends(get_current_active_user), 
         if source and await read_permitted(route.dependant, actor, session):
             result[source['id']] = source
     return sorted(result.values(), key=lambda source: source['name'])
+
+
+from app.services.workbook_mapping_assistant import AssistRequest, propose_mapping, validate_sample
+from app.core.config import get_settings
+
+@router.post('/assist')
+async def assist(body:AssistRequest, request:Request, actor:User=Depends(get_current_active_user), session:AsyncSession=Depends(get_session)):
+    # Schema is rediscovered with current account permissions, never trusted from the client.
+    destination=next((item for item in await tables(request,actor,session) if item['id']==body.table),None)
+    if destination is None:raise HTTPException(403,'This table is not available to your account')
+    try:
+        validate_sample(body.sheet)
+        return await propose_mapping(body.sheet,destination,body.guidance,get_settings())
+    except ValueError as exc:raise HTTPException(422,'Invalid sheet sample') from exc
+    except RuntimeError as exc:raise HTTPException(503,str(exc)) from exc
+
+
+def workspace_schema(route):
+    """Expose JSON request contracts, never invoke writes through schema discovery."""
+    if len(route.dependant.body_params) != 1 or any(f.field_info.is_required() for f in route.dependant.query_params):
+        return None
+    schema=route.dependant.body_params[0].field_info.annotation
+    if not inspect.isclass(schema) or not issubclass(schema,BaseModel):return None
+    if not schema.__name__.endswith(('Create','Update')):return None
+    return schema.model_json_schema()
+
+@router.get('/workspace')
+async def workspace(request:Request, actor:User=Depends(get_current_active_user), session:AsyncSession=Depends(get_session)):
+    routes=list(effective_api_routes(request.app.routes))
+    result=[]
+    models={mapper.class_.__name__:mapper.class_ for mapper in Base.registry.mappers}
+    model_sources={}
+    from typing import get_args, get_origin
+    for route in routes:
+        source=readable_source(route)
+        if not source or not await read_permitted(route.dependant,actor,session):continue
+        source={**source,'relations':[]}
+        response=route.response_model
+        row=get_args(response)[0] if get_origin(response) is list else get_args(response.model_fields['items'].annotation)[0]
+        model=models.get(row.__name__.removesuffix('Read'))
+        if model is not None:model_sources[model.__tablename__]=(model,source)
+        for action in routes:
+            if not isinstance(getattr(action,'original_route',action),APIRoute):continue
+            path=action.path
+            is_create=path==source['id'] and 'POST' in action.methods
+            suffix=path.removeprefix(source['id']+'/')
+            is_update=path.startswith(source['id']+'/') and suffix.startswith('{') and suffix.endswith('}') and '/' not in suffix and 'PATCH' in action.methods
+            if not (is_create or is_update):continue
+            schema=workspace_schema(action)
+            if schema is None or not await read_permitted(action.dependant,actor,session):continue
+            if is_update:
+                detail=next((r for r in routes if getattr(r,'path',None)==path and 'GET' in getattr(r,'methods',set())),None)
+                if not detail or not await read_permitted(detail.dependant,actor,session):continue
+            source['create' if is_create else 'update']={'path':path,'method':'POST' if is_create else 'PATCH','schema':schema}
+        result.append(source)
+    for model,source in model_sources.values():
+        for column in model.__table__.columns:
+            for fk in column.foreign_keys:
+                target=model_sources.get(fk.column.table.name)
+                if target and column.name in {c['name'] for c in source['columns']}:
+                    source['relations'].append({'column':column.name,'target':target[1]['id'],'targetColumn':fk.column.name})
+    return sorted(result,key=lambda item:item['name'])

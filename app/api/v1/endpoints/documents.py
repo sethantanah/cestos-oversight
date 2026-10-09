@@ -307,6 +307,19 @@ async def upload(
     data = await file.read(storage.max_bytes + 1)
     if not data:
         raise ValidationError("Choose a non-empty file")
+    media_hash = None
+    if metadata.category == 'Workbook Media':
+        import hashlib
+        from app.api.v1.endpoints.workbook_sync import lock_workbook
+        media_keys=[tag for tag in metadata.tags if tag.startswith('wm-')]
+        if len(media_keys)!=1 or len(data)>8*1024*1024:
+            raise ValidationError('Workbook media requires one file identifier and a file up to 8 MB')
+        media_hash=hashlib.sha256(data).hexdigest()
+        await lock_workbook(session,actor.organization_id,f'media:{actor.id}:{media_keys[0]}')
+        previous=await session.scalar(select(D).where(D.organization_id==actor.organization_id,D.owner_id==actor.id,D.category=='Workbook Media',D.tags.contains([media_keys[0]]),D.is_active.is_(True)).limit(1))
+        if previous:
+            if previous.content_hash!=media_hash:raise ValidationError('This media identifier already belongs to another file')
+            return public(previous,actor)
     try:
         stored = await run_in_threadpool(
             storage.save,
@@ -339,6 +352,7 @@ async def upload(
     if existing_import is None and metadata.category == 'Field Workbooks':
         row.created_at = func.clock_timestamp()
     old_import_path = row.storage_path if existing_import else None
+    if media_hash: row.content_hash = media_hash
     row.title = metadata.title
     row.category = metadata.category
     row.tags = metadata.tags

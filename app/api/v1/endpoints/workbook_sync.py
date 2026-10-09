@@ -1,3 +1,4 @@
+from app.services.workbook_media import clean_workbook_media
 """Revision-checked, idempotent workbook saves. Each accepted edit retains the prior file."""
 import hashlib
 import json
@@ -46,6 +47,8 @@ def payload_bytes(book):
             raise ValidationError('Invalid workbook dimensions')
         if any(not isinstance(row,list) or len(row) != len(widths) or any(not isinstance(v,str) or len(v)>32767 for v in row) for row in rows):
             raise ValidationError('Invalid workbook cells')
+    try: clean_workbook_media(book,[dict(s) for s in sheets])
+    except ValueError as exc:raise ValidationError(str(exc)) from exc
     try:
         data = json.dumps(book, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode()
     except (ValueError, TypeError):

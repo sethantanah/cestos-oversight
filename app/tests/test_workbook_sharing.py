@@ -9,7 +9,8 @@ source=Path(__file__).resolve().parents[1]/'api/v1/endpoints/workbook_shares.py'
 tree=ast.parse(source.read_text(encoding='utf-8'))
 class HTTPException(Exception):
     def __init__(self,status_code,detail):self.status_code=status_code;super().__init__(detail)
-namespace={'json':json,'math':math,'re':re,'HTTPException':HTTPException}
+from app.services.workbook_media import clean_workbook_media
+namespace={'json':json,'math':math,'re':re,'HTTPException':HTTPException,'clean_workbook_media':clean_workbook_media}
 for node in tree.body:
     if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in ['clean_workbook','can_edit','update']:
         node.decorator_list=[]
