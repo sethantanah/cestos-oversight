@@ -134,3 +134,6 @@ router.include_router(workbook_connections.router)
 
 from app.api.v1.endpoints import workbook_shares
 router.include_router(workbook_shares.router)
+
+from app.api.v1.endpoints import workbook_sync
+router.include_router(workbook_sync.router)

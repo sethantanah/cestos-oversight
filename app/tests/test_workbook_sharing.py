@@ -20,6 +20,24 @@ for node in tree.body:
 
 def book():return {'version':1,'id':'book','name':'Test','source':{'base64':'secret'},'sheets':[{'id':'s','name':'Sheet','cells':[['1'],['2']],'widths':[160],'heights':[34,34],'merges':[],'connection':{'table':'private'}}]}
 class SharingChecks(unittest.TestCase):
+    def test_date_time_formats_survive_sharing(self):
+        value=book()
+        style={"dataType":"datetime","dateOrder":"dmy","dateSeparator":"/","timeClock":"12","showSeconds":True}
+        value['sheets'][0]['formats']={"0:0":style}
+        self.assertEqual(namespace['clean_workbook'](value)['sheets'][0]['formats']['0:0'],style)
+        value['sheets'][0]['formats']['0:0']['dateSeparator']='bad'
+        with self.assertRaises(HTTPException):namespace['clean_workbook'](value)
+
+    def test_view_print_and_larger_sheets(self):
+        value=book();s=value['sheets'][0]
+        s['cells']=[['']*100 for _ in range(2000)];s['widths']=[100]*100;s['heights']=[30]*2000
+        s['view']={'freezeRows':1,'freezeColumns':2,'filterColumn':4,'filterText':'test'}
+        s['print']={'orientation':'portrait','fit':'width','repeatRows':1,'breakRows':[40], 'area':{'r':0,'c':0,'er':99,'ec':10}}
+        clean=namespace['clean_workbook'](value)['sheets'][0]
+        self.assertEqual(clean['view'],s['view']);self.assertEqual(clean['print'],s['print'])
+        s['print']['breakRows']=[2000]
+        with self.assertRaises(HTTPException):namespace['clean_workbook'](value)
+
     def test_excludes_private_metadata(self):
         value=book();value['sheets'].append(dict(value['sheets'][0],id='hidden',hidden=True))
         clean=namespace['clean_workbook'](value)

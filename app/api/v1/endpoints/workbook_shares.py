@@ -40,7 +40,7 @@ def clean_workbook(value):
         if sheet.get("previewLimited"):raise HTTPException(422,"Partially loaded sheets cannot be shared")
         rows=sheet.get("cells")
         widths=sheet.get("widths",[]);heights=sheet.get("heights",[])
-        if not isinstance(rows,list) or not 1<=len(rows)<=500 or not isinstance(widths,list) or not 1<=len(widths)<=50 or not isinstance(heights,list) or len(heights)!=len(rows):raise HTTPException(422,"Invalid sheet dimensions")
+        if not isinstance(rows,list) or not 1<=len(rows)<=2000 or not isinstance(widths,list) or not 1<=len(widths)<=100 or not isinstance(heights,list) or len(heights)!=len(rows):raise HTTPException(422,"Invalid sheet dimensions")
         if any(not isinstance(row,list) or len(row)!=len(widths) or any(not isinstance(cell,str) or len(cell)>32767 for cell in row) for row in rows):raise HTTPException(422,"Invalid cells")
         if any(not isinstance(n,(int,float)) or not math.isfinite(n) or not 0<=n<=10000 for n in widths+heights):raise HTTPException(422,"Invalid dimensions")
         merges=sheet.get("merges",[])
@@ -63,11 +63,11 @@ def clean_workbook(value):
             r,c=map(int,key.split(":"))
             if r>=len(rows) or c>=len(widths):raise HTTPException(422,"Invalid format coordinates")
             safe={}
-            for field in ["bold","italic","underline","strike","wrap"]:
+            for field in ["bold","italic","underline","strike","wrap","showSeconds"]:
                 if field in format:
                     if type(format[field]) is not bool:raise HTTPException(422,"Invalid format")
                     safe[field]=format[field]
-            for field,allowed in {"align":["left","center","right"],"vertical":["top","middle","bottom"],"dataType":["general","text","number","currency","percent","date","time","datetime"]}.items():
+            for field,allowed in {"dateOrder":["ymd","dmy","mdy"],"dateSeparator":["-","/","."],"timeClock":["12","24"],"align":["left","center","right"],"vertical":["top","middle","bottom"],"dataType":["general","text","number","currency","percent","date","time","datetime"]}.items():
                 if field in format:
                     if format[field] not in allowed:raise HTTPException(422,"Invalid format")
                     safe[field]=format[field]
@@ -78,7 +78,35 @@ def clean_workbook(value):
             for field in ["fontSize","decimals"]:
                 if field in format and type(format[field]) in (int,float) and 0<=format[field]<=100:safe[field]=format[field]
             safe_formats[key]=safe
-        clean.append({"id":sheet["id"],"name":sheet["name"][:31],"cells":rows,"widths":widths,"heights":heights,"merges":merges,"formats":safe_formats,"imported":True})
+        settings={}
+        for field in ("view","print"):
+            if field not in sheet:continue
+            config=sheet[field]
+            if not isinstance(config,dict):raise HTTPException(422,"Invalid sheet settings")
+            safe={}
+            limits={"freezeRows":len(rows),"freezeColumns":len(widths),"filterColumn":len(widths)-1} if field=="view" else {"repeatRows":20}
+            for key,maximum in limits.items():
+                if key in config:
+                    if type(config[key]) is not int or not 0<=config[key]<=maximum:raise HTTPException(422,"Invalid sheet settings")
+                    safe[key]=config[key]
+            if field=="view" and "filterText" in config:
+                if not isinstance(config["filterText"],str) or len(config["filterText"])>32767:raise HTTPException(422,"Invalid filter")
+                safe["filterText"]=config["filterText"]
+            if field=="print":
+                for key,allowed in {"orientation":["portrait","landscape"],"fit":["width","actual"]}.items():
+                    if key in config:
+                        if config[key] not in allowed:raise HTTPException(422,"Invalid print settings")
+                        safe[key]=config[key]
+                if "area" in config:
+                    a=config["area"]
+                    if not isinstance(a,dict) or any(type(a.get(k)) is not int for k in ("r","c","er","ec")) or not (0<=a["r"]<=a["er"]<len(rows) and 0<=a["c"]<=a["ec"]<len(widths)):raise HTTPException(422,"Invalid print area")
+                    safe["area"]={k:a[k] for k in ("r","c","er","ec")}
+                if "breakRows" in config:
+                    breaks=config["breakRows"]
+                    if not isinstance(breaks,list) or len(breaks)>len(rows) or any(type(r) is not int or not 0<=r<len(rows) for r in breaks):raise HTTPException(422,"Invalid page breaks")
+                    safe["breakRows"]=sorted(set(breaks))
+            settings[field]=safe
+        clean.append({"id":sheet["id"],"name":sheet["name"][:31],"cells":rows,"widths":widths,"heights":heights,"merges":merges,"formats":safe_formats,"imported":True,**settings})
     if not clean:raise HTTPException(422,"No visible sheets to share")
     return {"version":1,"id":value["id"],"name":str(value.get("name","Workbook"))[:250],"template":False,"sheets":clean}
 

@@ -16,7 +16,7 @@ router = APIRouter(prefix="/workbook-connections", tags=["Workbook mapping previ
 class MappingRequest(BaseModel):
     table: str
     mapping: dict[str, int]
-    rows: list[list[str]] = Field(max_length=500)
+    rows: list[list[str]] = Field(max_length=2000)
 
 async def catalog(request, actor, session):
     models={m.class_.__name__:m.class_ for m in Base.registry.mappers}
@@ -59,7 +59,7 @@ async def preview(body:MappingRequest, request:Request, actor:User=Depends(get_c
     if not entry: raise HTTPException(403,"This table is not available for workbook mappings")
     schema,model=entry
     if set(body.mapping)-set(schema.model_fields) or len(set(body.mapping.values()))!=len(body.mapping): raise HTTPException(422,"Map each sheet column to at most one supported database field")
-    if any(i<0 or i>=50 for i in body.mapping.values()): raise HTTPException(422,"Invalid sheet column")
+    if any(i<0 or i>=100 for i in body.mapping.values()): raise HTTPException(422,"Invalid sheet column")
     issues=[]; prepared=[]
     for index,row in enumerate(body.rows):
         if not any(value.strip() for value in row): continue
@@ -90,3 +90,86 @@ async def preview(body:MappingRequest, request:Request, actor:User=Depends(get_c
             issues.extend({"row":index+1,"field":".".join(map(str,e["loc"])),"message":e["msg"]} for e in exc.errors())
     if not prepared and not issues: issues.append({"row":0,"field":"","message":"No data rows"})
     return {"issues":issues,"count":len(prepared),"preview":prepared[:10],"writes_enabled":False}
+
+
+def effective_api_routes(routes):
+    # FastAPI may retain included routers rather than flattening app.routes.
+    # Effective candidates include inherited prefixes and authentication dependencies.
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+        elif callable(getattr(route, 'effective_candidates', None)):
+            yield from effective_api_routes(route.effective_candidates())
+        elif isinstance(getattr(route, 'original_route', None), APIRoute):
+            yield route
+
+
+def readable_source(route):
+    """Describe supported collection responses; data is fetched via the original secured route."""
+    from typing import get_args, get_origin
+    if not isinstance(getattr(route, 'original_route', route), APIRoute) or 'GET' not in route.methods or '{' in route.path or not route.path.startswith('/api/v1/'):
+        return None
+    if route.path.startswith(('/api/v1/auth', '/api/v1/workbook-', '/api/v1/sync', '/api/v1/users', '/api/v1/roles', '/api/v1/permissions', '/api/v1/organizations')):
+        return None
+    if any(field.field_info.is_required() for field in route.dependant.query_params):
+        return None
+    response = route.response_model
+    pagination = 'none'
+    if get_origin(response) is list:
+        row = get_args(response)[0]
+    elif inspect.isclass(response) and issubclass(response, BaseModel) and 'items' in response.model_fields:
+        items = response.model_fields['items'].annotation
+        if get_origin(items) is not list:
+            return None
+        row = get_args(items)[0]
+        queries = {field.name for field in route.dependant.query_params}
+        if not {'page', 'page_size'}.issubset(queries):
+            return None
+        pagination = 'page'
+    else:
+        return None
+    if not inspect.isclass(row) or not issubclass(row, BaseModel):
+        return None
+    contract = row.model_json_schema()
+    columns = []
+    for name, definition in contract.get('properties', {}).items():
+        choices = definition.get('anyOf', [definition])
+        flat = [item for item in choices if item.get('type') != 'null']
+        if len(flat) != 1:
+            continue
+        field = flat[0]
+        if '$ref' in field:
+            field = contract.get('$defs', {}).get(field['$ref'].split('/')[-1], {})
+        if field.get('type') not in ('string', 'number', 'integer', 'boolean'):
+            continue
+        columns.append({'name': name, 'type': field['type'], 'format': field.get('format')})
+    if not columns:
+        return None
+    return {'id': route.path, 'name': route.path.removeprefix('/api/v1/').replace('-', ' ').replace('/', ' / ').title(), 'columns': columns, 'pagination': pagination}
+
+async def read_permitted(dependant, actor, session):
+    for dep in dependant.dependencies:
+        call = dep.call
+        if call and getattr(call, '__name__', '') == 'dependency':
+            variables = inspect.getclosurevars(call).nonlocals
+            try:
+                if 'code' in variables:
+                    await require_permission(variables['code'])(actor, session)
+                elif 'name' in variables:
+                    await require_role(variables['name'])(actor)
+                else:
+                    return False
+            except ForbiddenError:
+                return False
+        if not await read_permitted(dep, actor, session):
+            return False
+    return True
+
+@router.get('/sources')
+async def sources(request:Request, actor:User=Depends(get_current_active_user), session:AsyncSession=Depends(get_session)):
+    result = {}
+    for route in effective_api_routes(request.app.routes):
+        source = readable_source(route)
+        if source and await read_permitted(route.dependant, actor, session):
+            result[source['id']] = source
+    return sorted(result.values(), key=lambda source: source['name'])

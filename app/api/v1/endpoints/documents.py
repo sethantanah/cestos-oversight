@@ -300,6 +300,10 @@ async def upload(
         if linked_record is None:
             raise NotFoundError("Linked maintenance record not found")
         visibility = "PUBLIC"
+    if metadata.category == 'Field Workbooks':
+        from app.api.v1.endpoints.workbook_sync import lock_workbook
+        for workbook_tag in sorted(t for t in metadata.tags if t.startswith('wb-')):
+            await lock_workbook(session, actor.organization_id, workbook_tag[3:])
     data = await file.read(storage.max_bytes + 1)
     if not data:
         raise ValidationError("Choose a non-empty file")
@@ -332,6 +336,8 @@ async def upload(
         source_id=source_id or identifier,
         owner_id=actor.id,
     )
+    if existing_import is None and metadata.category == 'Field Workbooks':
+        row.created_at = func.clock_timestamp()
     old_import_path = row.storage_path if existing_import else None
     row.title = metadata.title
     row.category = metadata.category
@@ -488,6 +494,8 @@ async def delete_workbook(identifier: uuid.UUID, actor: User = Depends(get_curre
     key = next((tag for tag in row.tags if tag.startswith("wb-")), None)
     if row.category != "Field Workbooks" or not key:
         raise ValidationError("This document is not a workbook")
+    from app.api.v1.endpoints.workbook_sync import lock_workbook
+    await lock_workbook(session, actor.organization_id, key[3:])
     versions = list((await session.scalars(select(D).where(D.organization_id == actor.organization_id, D.category == "Field Workbooks", D.tags.contains([key]), D.is_active.is_(True)))).all())
     for version in versions:
         manage(version, actor)
