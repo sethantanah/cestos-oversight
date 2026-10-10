@@ -13,7 +13,8 @@ primary_region = 'lhr'
 
 [env]
   APP_ENV = 'production'
-  LOGIN_SESSION_HOURS = '72'
+  LOGIN_SESSION_HOURS = '12'
+  ACCESS_TOKEN_EXPIRE_MINUTES = '720'
   PUBLIC_BASE_URL = 'https://cestos.qoteport.workers.dev'
   LOG_LEVEL = 'info'
   PORT = '8000'
