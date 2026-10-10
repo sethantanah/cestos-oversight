@@ -218,6 +218,11 @@ async def workspace(request:Request, actor:User=Depends(get_current_active_user)
         source=readable_source(route)
         if not source or not await read_permitted(route.dependant,actor,session):continue
         source={**source,'relations':[]}
+        for candidate in routes:
+            suffix=candidate.path.removeprefix(source['id']+'/')
+            if candidate.path.startswith(source['id']+'/') and suffix.startswith('{') and suffix.endswith('}') and '/' not in suffix and 'GET' in candidate.methods and not any(f.field_info.is_required() for f in candidate.dependant.query_params) and await read_permitted(candidate.dependant,actor,session):
+                source['detailPath']=candidate.path
+                break
         response=route.response_model
         row=get_args(response)[0] if get_origin(response) is list else get_args(response.model_fields['items'].annotation)[0]
         model=models.get(row.__name__.removesuffix('Read'))
